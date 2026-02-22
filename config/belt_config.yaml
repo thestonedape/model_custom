@@ -1,0 +1,100 @@
+# BELT Model Configuration
+# Based on paper Section IV-B and Table I
+
+# Dataset Configuration
+data:
+  dataset_path: "dataset/ZuCo"
+  tasks: ["task1-SR", "task2-NR", "task3-TSR"]  # Combined for word classification
+  vocabulary_size: 500  # Top-500 most frequent words
+  splits:
+    train: 0.8
+    dev: 0.1
+    test: 0.1
+  input_dim: 840  # 105 electrodes × 8 frequency bands
+  random_seed: 42
+
+# D-Conformer Architecture (Table I)
+model:
+  conformer:
+    num_blocks: 6
+    d_model: 840
+    num_heads: 8
+    ffn_expansion: 4  # 840 → 3360 → 840
+    dropout: 0.1
+    conv_kernel_size: 31
+    
+  vector_quantizer:
+    input_dim: 840
+    codebook_size: 1024  # K=1024
+    codebook_dim: 1024   # D=1024
+    beta: 0.3  # Commitment loss weight (Equation 2)
+    
+  contrastive:
+    eeg_proj_dim: 1024  # Input from VQ codebook_dim
+    word_proj_dim: 768  # Project to BART embedding dim
+    bart_model: "facebook/bart-base"
+    freeze_bart: true
+    temperature: 0.07  # τ in Equation 3
+    
+  classifier:
+    input_dim: 1024  # From VQ codebook
+    hidden_dims: [512, 256]
+    output_dim: 500  # Vocabulary size
+    dropout: 0.3
+
+# Training Configuration (Section IV-B)
+training:
+  epochs: 60
+  batch_size: 64
+  learning_rate: 1.0e-3  # Increased from 5e-6 (too small for SGD)
+  optimizer: "sgd"
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  scheduler: "cosine"  # CosineAnnealingLR
+  
+  # Loss weights (Equation 7)
+  loss_weights:
+    alpha: 0.9  # Weight for L_cl^w (contrastive)
+    lambda: 1.0  # Weight for L_vq (vector quantization)
+  
+  # Training method
+  joint_training: true  # All losses together from epoch 1
+  
+  # Gradient clipping
+  grad_clip: 1.0
+  
+  # Checkpointing
+  save_best: true
+  save_every: 5  # Save checkpoint every N epochs
+  early_stopping_patience: 15
+
+# Evaluation
+evaluation:
+  metrics: ["top1", "top5", "top10"]
+  batch_size: 128
+
+# Logging
+logging:
+  log_interval: 10  # Log every N batches
+  tensorboard: true
+  wandb: false  # Set to true if using W&B
+
+# Experiment Configurations
+experiments:
+  # Model 1: Ablation (no bootstrapping)
+  ablation:
+    use_contrastive: false  # Disable L_cl^w
+    save_dir: "results/ablation_results"
+    expected_top10: 0.25  # ~25% from Table VI
+  
+  # Model 2: Full BELT (with bootstrapping)
+  full_belt:
+    use_contrastive: true  # Enable L_cl^w
+    save_dir: "results/main_results"
+    expected_top10: 0.3104  # 31.04% from paper
+
+# Hardware
+hardware:
+  device: "cuda"  # or "cpu"
+  num_workers: 4
+  pin_memory: true
