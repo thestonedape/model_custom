@@ -46,7 +46,7 @@ model:
 training:
   epochs: 60
   batch_size: 64
-  learning_rate: 1.0e-3  # Increased from 5e-6 (too small for SGD)
+  learning_rate: 1.0e-4  # Reduced from 1e-3 (was diverging)
   optimizer: "sgd"
   momentum: 0.9
   weight_decay: 1.0e-4
