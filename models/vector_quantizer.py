@@ -99,8 +99,9 @@ class VectorQuantizer(nn.Module):
         
         # Compute VQ loss (Equation 2)
         # L_vq = ||sg[z_e(h)] - v||² + β*||z_e(h) - sg[v]||²
-        codebook_loss = F.mse_loss(quantized.detach(), z_e)  # ||sg[z_e] - v||²
-        commitment_loss = F.mse_loss(z_e, quantized.detach())  # ||z_e - sg[v]||²
+        # FIX: Detach z_e (not quantized) for codebook loss so codebook gets gradients
+        codebook_loss = F.mse_loss(quantized, z_e.detach())  # Codebook moves toward encoder
+        commitment_loss = F.mse_loss(z_e, quantized.detach())  # Encoder commits to codebook
         vq_loss = codebook_loss + self.beta * commitment_loss
         
         # Straight-through estimator: copy gradients from quantized to z_e

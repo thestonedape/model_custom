@@ -82,14 +82,20 @@ class ContrastiveLoss(nn.Module):
         with torch.no_grad() if next(self.bart.parameters()).requires_grad == False else torch.enable_grad():
             # Get input embeddings directly
             input_embeds = self.bart.get_input_embeddings()
-            # Take mean over token dimension (usually 1-2 tokens per word)
-            word_ids = tokens['input_ids']
+            word_ids = tokens['input_ids']  # (batch, seq_len)
             embeddings = input_embeds(word_ids)  # (batch, seq_len, word_dim)
             
-            # Average over sequence (handling <s>, word tokens, </s>)
-            # Take only the middle token(s), skip <s> and </s>
-            mask = tokens['attention_mask']
-            embeddings = (embeddings * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
+            # FIX: Exclude special tokens <s> (id=0) and </s> (id=2) from averaging
+            # BART tokenizer: <s>=0, </s>=2, <pad>=1
+            # Only average the actual word tokens (not special tokens)
+            special_token_mask = (word_ids == 0) | (word_ids == 2) | (word_ids == 1)
+            content_mask = (~special_token_mask).float().unsqueeze(-1)  # (batch, seq_len, 1)
+            
+            # Average only content tokens
+            masked_embeds = embeddings * content_mask
+            sum_embeds = masked_embeds.sum(1)  # (batch, word_dim)
+            count = content_mask.sum(1).clamp(min=1)  # (batch, 1) avoid div by zero
+            embeddings = sum_embeds / count
         
         return embeddings
     
@@ -124,6 +130,19 @@ class ContrastiveLoss(nn.Module):
         # Compute similarity matrix: (batch, batch)
         # similarity[i,j] = eeg_proj[i] · word_proj[j]
         similarity = torch.matmul(eeg_proj, word_proj.t()) / self.temperature
+        
+        # FIX: Handle duplicate words in batch (common for "the", "and", etc.)
+        # Create mask where True = same word (should not be treated as negative)
+        word_match_mask = torch.zeros((batch_size, batch_size), dtype=torch.bool, device=similarity.device)
+        for i in range(batch_size):
+            for j in range(batch_size):
+                if i != j and words[i] == words[j]:
+                    word_match_mask[i, j] = True
+        
+        # Mask out false negatives: set their logits to very negative value
+        # So they don't contribute to the denominator of InfoNCE
+        if word_match_mask.any():
+            similarity = similarity.masked_fill(word_match_mask, -1e9)
         
         # InfoNCE loss: maximize similarity on diagonal
         # L = -log(exp(sim[i,i]) / sum_j(exp(sim[i,j])))
