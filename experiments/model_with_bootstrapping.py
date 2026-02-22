@@ -7,6 +7,7 @@ Expected Top-10 Accuracy: ~31.04%
 
 import sys
 import os
+import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
@@ -23,11 +24,26 @@ from training import ContrastiveLoss, BELTLosses, BELTTrainer
 def main():
     """Run Model 2 (Full BELT with Bootstrapping)"""
     
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train BELT model')
+    parser.add_argument('--no-contrastive', action='store_true',
+                       help='Disable contrastive loss (test if CE improves)')
+    parser.add_argument('--alpha', type=float, default=None,
+                       help='Override contrastive loss weight (e.g., 0.05 for weak contrastive)')
+    args = parser.parse_args()
+    
     print("="*80)
     print("MODEL 2: FULL BELT (WITH BOOTSTRAPPING)")
     print("="*80)
-    print("Training with: L = L_ce + alpha*L_cl^w + lambda*L_vq")
-    print("Expected Top-10 Accuracy: ~31.04%")
+    if args.no_contrastive:
+        print("Training with: L = L_ce + lambda*L_vq (NO CONTRASTIVE)")
+        print("Expected: CE should decrease if contrastive was blocking")
+    elif args.alpha is not None:
+        print(f"Training with: L = L_ce + {args.alpha}*L_cl^w + lambda*L_vq")
+        print(f"Testing with weak contrastive (alpha={args.alpha})")
+    else:
+        print("Training with: L = L_ce + alpha*L_cl^w + lambda*L_vq")
+        print("Expected Top-10 Accuracy: ~31.04%")
     print("="*80)
     
     # Load configuration
@@ -80,8 +96,19 @@ def main():
     print(f"  Train: {len(train_loader.dataset)} samples")
     print(f"  Dev: {len(dev_loader.dataset)} samples")
     print(f"  Test: {len(test_loader.dataset)} samples")
-    
-    # Build models
+        # VERIFY DATA/LABEL ALIGNMENT
+    print("\n" + "-"*80)
+    print("VERIFYING DATA/LABEL ALIGNMENT (10 samples)")
+    print("-"*80)
+    first_batch = next(iter(train_loader))
+    eeg_batch, label_batch, word_batch = first_batch
+    for i in range(min(10, len(label_batch))):
+        label_id = label_batch[i].item()
+        word_from_vocab = vocab.id_to_word[label_id]
+        word_from_dataset = word_batch[i]
+        match = "✓" if word_from_vocab == word_from_dataset else "✗ MISMATCH!"
+        print(f"  [{i}] Label={label_id:3d} | Vocab='{word_from_vocab}' | Dataset='{word_from_dataset}' {match}")
+        # Build models
     print("\n" + "-"*80)
     print("BUILDING MODELS")
     print("-"*80)
@@ -119,21 +146,31 @@ def main():
     print("\n" + "-"*80)
     print("SETTING UP CONTRASTIVE LOSS")
     print("-"*80)
-    print("Loading BART model for word embeddings...")
     
-    contrastive_loss = ContrastiveLoss(
-        eeg_dim=config['model']['contrastive']['eeg_proj_dim'],
-        word_dim=config['model']['contrastive']['word_proj_dim'],
-        bart_model_name=config['model']['contrastive']['bart_model'],
-        temperature=config['model']['contrastive']['temperature'],
-        freeze_bart=config['model']['contrastive']['freeze_bart']
-    )
+    contrastive_loss = None
+    use_contrastive = not args.no_contrastive
     
-    print(f"Contrastive loss initialized")
-    print(f"  EEG projection: {config['model']['contrastive']['eeg_proj_dim']}")
-    print(f"  Word projection: {config['model']['contrastive']['word_proj_dim']}")
-    print(f"  Temperature: {config['model']['contrastive']['temperature']}")
-    print(f"  BART frozen: {config['model']['contrastive']['freeze_bart']}")
+    if use_contrastive:
+        print("Loading BART model for word embeddings...")
+        
+        contrastive_loss = ContrastiveLoss(
+            eeg_dim=config['model']['contrastive']['eeg_proj_dim'],
+            word_dim=config['model']['contrastive']['word_proj_dim'],
+            bart_model_name=config['model']['contrastive']['bart_model'],
+            temperature=config['model']['contrastive']['temperature'],
+            freeze_bart=config['model']['contrastive']['freeze_bart']
+        )
+        
+        print(f"Contrastive loss initialized")
+        print(f"  EEG projection: {config['model']['contrastive']['eeg_proj_dim']}")
+        print(f"  Word projection: {config['model']['contrastive']['word_proj_dim']}")
+        print(f"  Temperature: {config['model']['contrastive']['temperature']}")
+        print(f"  BART frozen: {config['model']['contrastive']['freeze_bart']}")
+    else:
+        print("Contrastive loss DISABLED (testing if it blocks CE learning)")
+    
+    # Get alpha from args or config
+    alpha = args.alpha if args.alpha is not None else config['training']['loss_weights']['alpha']
     
     total_params = (
         sum(p.numel() for p in encoder.parameters()) +
@@ -148,18 +185,24 @@ def main():
     print("\n" + "-"*80)
     print("SETTING UP COMBINED LOSSES")
     print("-"*80)
-    print("Using: L = L_ce + α*L_cl^w + λ*L_vq")
+    if use_contrastive:
+        print(f"Using: L = L_ce + α*L_cl^w + λ*L_vq")
+    else:
+        print(f"Using: L = L_ce + λ*L_vq (no contrastive)")
     
     belt_losses = BELTLosses(
-        alpha=config['training']['loss_weights']['alpha'],
+        alpha=alpha,
         lambda_vq=config['training']['loss_weights']['lambda'],
-        use_contrastive=True,  # Full BELT: use contrastive loss
+        use_contrastive=use_contrastive,
         contrastive_loss=contrastive_loss
     )
     
     print(f"Loss weights:")
     print(f"  λ (VQ): {config['training']['loss_weights']['lambda']}")
-    print(f"  α (Contrastive): {config['training']['loss_weights']['alpha']}")
+    if use_contrastive:
+        print(f"  α (Contrastive): {alpha}")
+    else:
+        print(f"  α (Contrastive): 0.0 (disabled)")
     
     # Create trainer
     print("\n" + "-"*80)

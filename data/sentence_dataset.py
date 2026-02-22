@@ -25,7 +25,8 @@ class BELTSentenceDataset(Dataset):
         sentence_list: List[Tuple[str, Optional[str], int]],
         vocabulary,
         split: str = 'train',
-        eeg_type: str = 'GD'
+        eeg_type: str = 'GD',
+        use_cache: bool = True
     ):
         """
         Args:
@@ -33,16 +34,26 @@ class BELTSentenceDataset(Dataset):
             vocabulary: Vocabulary object
             split: 'train', 'dev', or 'test'
             eeg_type: 'GD', 'FFD', or 'TRT'
+            use_cache: If True, cache processed samples to disk
         """
         self.vocabulary = vocabulary
         self.split = split
         self.eeg_type = eeg_type
         self.samples = []
         
+        # Check for cached processed samples
+        cache_path = Path(f"data/processed_{split}_{eeg_type}.pkl")
+        if use_cache and cache_path.exists():
+            print(f"Loading {split} data from cache: {cache_path}")
+            with open(cache_path, 'rb') as f:
+                self.samples = pickle.load(f)
+            print(f"Loaded {len(self.samples):,} samples for {split} split (cached)")
+            return
+        
         # Cache for loaded pickle files to avoid repeated loading
         self._cache = {}
         
-        print(f"Loading {split} data from sentence-level splits...")
+        print(f"Processing {split} data from sentence-level splits...")
         print(f"  Total sentences: {len(sentence_list):,}")
         print(f"  Using EEG type: {eeg_type}")
         
@@ -104,6 +115,13 @@ class BELTSentenceDataset(Dataset):
         self._cache.clear()
         
         print(f"Loaded {len(self.samples):,} samples for {split} split")
+        
+        # Save to cache for next time
+        if use_cache:
+            cache_path = Path(f"data/processed_{split}_{eeg_type}.pkl")
+            print(f"Saving processed samples to cache: {cache_path}")
+            with open(cache_path, 'wb') as f:
+                pickle.dump(self.samples, f)
     
     def _extract_eeg_features(self, word_data, eeg_type: str) -> Optional[np.ndarray]:
         """
