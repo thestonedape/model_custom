@@ -104,7 +104,7 @@ def main():
     eeg_batch, label_batch, word_batch = first_batch
     for i in range(min(10, len(label_batch))):
         label_id = label_batch[i].item()
-        word_from_vocab = vocab.id_to_word[label_id]
+        word_from_vocab = vocab.get_word_from_index(label_id)
         word_from_dataset = word_batch[i]
         match = "✓" if word_from_vocab == word_from_dataset else "✗ MISMATCH!"
         print(f"  [{i}] Label={label_id:3d} | Vocab='{word_from_vocab}' | Dataset='{word_from_dataset}' {match}")
@@ -175,10 +175,13 @@ def main():
     total_params = (
         sum(p.numel() for p in encoder.parameters()) +
         sum(p.numel() for p in vector_quantizer.parameters()) +
-        sum(p.numel() for p in classifier.parameters()) +
-        sum(p.numel() for p in contrastive_loss.eeg_projection.parameters()) +
-        sum(p.numel() for p in contrastive_loss.word_projection.parameters())
+        sum(p.numel() for p in classifier.parameters())
     )
+    if use_contrastive and contrastive_loss is not None:
+        total_params += (
+            sum(p.numel() for p in contrastive_loss.eeg_projection.parameters()) +
+            sum(p.numel() for p in contrastive_loss.word_projection.parameters())
+        )
     print(f"\nTotal trainable parameters: {total_params:,}")
     
     # Setup combined losses
