@@ -79,7 +79,7 @@ Brain-Computer Interfaces (BCIs) leverage EEG signals to decode cognitive states
 \begin{itemize}
     \item Complete BELT implementation with 113M trainable parameters
     \item Discovery and resolution of 3 critical training bugs (VQ codebook, contrastive loss masking, learning rate tuning)
-    \item Demonstration that contrastive loss blocks learning at all weights (α = 0.1 to 0.9)
+    \item Demonstration that contrastive loss blocks learning at all weights ($\alpha$ = 0.1 to 0.9)
     \item Comprehensive training analysis framework with authenticity verification
     \item Public GitHub repository with clean, reproducible code
 \end{itemize}
@@ -199,7 +199,7 @@ The total loss combines three components:
     \item \textbf{Tasks:} Task 1-SR (Sentiment Reading), Task 2-NR (Normal Reading), Task 3-TSR (Task-Specific Reading)
     \item \textbf{Participants:} 12 subjects (Task 1), 12 subjects (Task 2), 18 subjects (Task 3)
     \item \textbf{EEG Setup:} 105 electrodes, 500 Hz sampling rate
-    \item \textbf{Processing:} 8 frequency bands (θ, α, β, γ) extracted per electrode
+    \item \textbf{Processing:} 8 frequency bands ($\theta$, $\alpha$, $\beta$, $\gamma$) extracted per electrode
 \end{itemize}
 
 \subsubsection{Data Splits}
@@ -267,7 +267,7 @@ Contrastive Weight ($\alpha$) & 0.9 (paper) & 0.0 (ablation) \\
 
 \section{Results}
 
-\subsection{Primary Training Results (α = 0.0, No Contrastive)}
+\subsection{Primary Training Results ($\alpha$ = 0.0, No Contrastive)}
 
 \subsubsection{Final Performance}
 \begin{table}[H]
@@ -350,7 +350,7 @@ Top-1 & 6.00\% & 7.38\% & +1.38\% & \textcolor{green}{Better} \\
 Top-5 & 20.00\% & 20.61\% & +0.61\% & \textcolor{green}{Better} \\
 Top-10 & 31.04\% & 29.41\% & -1.63\% & \textcolor{orange}{Within 5\%} \\
 \midrule
-Contrastive & α = 0.9 & α = 0.0 & — & \textcolor{red}{Disabled} \\
+Contrastive & $\alpha$ = 0.9 & $\alpha$ = 0.0 & — & \textcolor{red}{Disabled} \\
 \bottomrule
 \end{tabular}
 \caption{Performance comparison with BELT paper (Table II)}
@@ -359,7 +359,7 @@ Contrastive & α = 0.9 & α = 0.0 & — & \textcolor{red}{Disabled} \\
 \textbf{Critical Finding:}
 \begin{itemize}
     \item Our model achieves 29.41\% \textit{without} contrastive loss
-    \item BELT paper achieves 31.04\% \textit{with} contrastive loss (α = 0.9)
+    \item BELT paper achieves 31.04\% \textit{with} contrastive loss ($\alpha$ = 0.9)
     \item \textbf{Gap is only 1.63\%} $\Rightarrow$ contrastive contributes minimally or is incorrectly implemented in paper
 \end{itemize}
 
@@ -401,7 +401,7 @@ We conducted systematic ablation studies to determine the effect of contrastive 
 
 \subsubsection{200-Batch Quick Tests}
 
-\textbf{Methodology:} Train for 200 batches (10\% of one epoch) with different α values to rapidly assess loss trajectory.
+\textbf{Methodology:} Train for 200 batches (10\% of one epoch) with different $\alpha$ values to rapidly assess loss trajectory.
 
 \begin{table}[H]
 \centering
@@ -409,8 +409,8 @@ We conducted systematic ablation studies to determine the effect of contrastive 
 \toprule
 \textbf{Config} & \textbf{Batch 0} & \textbf{Batch 200} & \textbf{Change} & \textbf{Status} \\
 \midrule
-α = 0.0 (no CL) & 6.6397 & 6.6159 & -0.024 (-0.36\%) & \textcolor{green}{Learning} \\
-α = 0.1 (weak CL) & 7.0715 & 7.0702 & -0.001 (-0.02\%) & \textcolor{red}{Blocked} \\
+$\alpha$ = 0.0 (no CL) & 6.6397 & 6.6159 & -0.024 (-0.36\%) & \textcolor{green}{Learning} \\
+$\alpha$ = 0.1 (weak CL) & 7.0715 & 7.0702 & -0.001 (-0.02\%) & \textcolor{red}{Blocked} \\
 \bottomrule
 \end{tabular}
 \caption{Fast ablation test results (200 batches, fresh initialization)}
@@ -418,15 +418,15 @@ We conducted systematic ablation studies to determine the effect of contrastive 
 
 \textbf{Key Observations:}
 \begin{enumerate}
-    \item \textbf{Initial Loss Penalty:} Adding contrastive (α=0.1) increases initial loss by +0.43 (6.4\%)
+    \item \textbf{Initial Loss Penalty:} Adding contrastive ($\alpha$=0.1) increases initial loss by +0.43 (6.4\%)
     \item \textbf{Learning Blockage:} With contrastive, loss remains flat (7.07→7.07)
     \item \textbf{Baseline Learning:} Without contrastive, loss decreases (6.64→6.62)
     \item \textbf{Above Random:} Both configurations start above random baseline (6.21), indicating fresh initialization
 \end{enumerate}
 
-\subsubsection{Full-Epoch Test (α = 0.1, Epoch 1)}
+\subsubsection{Full-Epoch Test ($\alpha$ = 0.1, Epoch 1)}
 
-Extended the α = 0.1 experiment to \textasciitilde1450 batches before stopping:
+Extended the $\alpha$ = 0.1 experiment to \textasciitilde1450 batches before stopping:
 
 \begin{itemize}
     \item \textbf{Initial Loss:} 7.06
@@ -440,7 +440,7 @@ Extended the α = 0.1 experiment to \textasciitilde1450 batches before stopping:
 \centering
 \begin{tabular}{lcc}
 \toprule
-\textbf{Contrastive Weight (α)} & \textbf{Result} & \textbf{Recommendation} \\
+\textbf{Contrastive Weight ($\alpha$)} & \textbf{Result} & \textbf{Recommendation} \\
 \midrule
 0.9 (paper default) & Never tested & \textcolor{red}{Avoid} \\
 0.1 (weak) & Loss increases & \textcolor{red}{Blocks learning} \\
@@ -470,26 +470,26 @@ We developed a comprehensive verification script (\texttt{verify\_results.py}) t
     \begin{itemize}
         \item Initial: 6.19, Final: 5.45
         \item Improvement: 0.74 (12.0\%)
-        \item ✓ Passes (well below random 6.21)
+        \item $\checkmark$ Passes (well below random 6.21)
     \end{itemize}
     
     \item \textbf{Top-10 Accuracy Gain:}
     \begin{itemize}
         \item Initial: 19.45\%, Final: 29.86\%
         \item Gain: +10.41\%
-        \item ✓ Passes (substantial improvement)
+        \item $\checkmark$ Passes (substantial improvement)
     \end{itemize}
     
     \item \textbf{VQ Stability:}
     \begin{itemize}
         \item Final VQ loss: 1.055
-        \item ✓ Passes (healthy codebook learning)
+        \item $\checkmark$ Passes (healthy codebook learning)
     \end{itemize}
     
     \item \textbf{BELT Paper Comparison:}
     \begin{itemize}
         \item Within 1.63\% of paper despite missing contrastive
-        \item ⚠️ Warning: Suspiciously close (suggests paper's contrastive didn't help)
+        \item \textbf{WARNING:} Suspiciously close (suggests paper's contrastive didn't help)
     \end{itemize}
 \end{enumerate}
 
@@ -540,16 +540,16 @@ Perfect label-vocabulary-dataset alignment verified across 10 random samples:
 \toprule
 \textbf{Index} & \textbf{Label ID} & \textbf{Vocabulary} & \textbf{Dataset} \\
 \midrule
-0 & 374 & husband & husband ✓ \\
-1 & 2 & was & was ✓ \\
-2 & 10 & as & as ✓ \\
-3 & 419 & david & david ✓ \\
-4 & 211 & same & same ✓ \\
-5 & 28 & united & united ✓ \\
-6 & 280 & father, & father, ✓ \\
-7 & 28 & united & united ✓ \\
-8 & 0 & the & the ✓ \\
-9 & 25 & school & school ✓ \\
+0 & 374 & husband & husband $\checkmark$ \\
+1 & 2 & was & was $\checkmark$ \\
+2 & 10 & as & as $\checkmark$ \\
+3 & 419 & david & david $\checkmark$ \\
+4 & 211 & same & same $\checkmark$ \\
+5 & 28 & united & united $\checkmark$ \\
+6 & 280 & father, & father, $\checkmark$ \\
+7 & 28 & united & united $\checkmark$ \\
+8 & 0 & the & the $\checkmark$ \\
+9 & 25 & school & school $\checkmark$ \\
 \bottomrule
 \end{tabular}
 \caption{Label-vocabulary-dataset alignment verification}
@@ -800,8 +800,8 @@ L_total = L_ce + alpha_scaled * L_cl + lambda * L_vq
     \item \textbf{Contrastive Warmup:}
     \begin{itemize}
         \item Train CE-only for 10 epochs
-        \item Introduce CL gradually: α = 0 → 0.1 over 10 epochs
-        \item Fine-tune with α = 0.1 for remaining epochs
+        \item Introduce CL gradually: $\alpha$ = 0 $\rightarrow$ 0.1 over 10 epochs
+        \item Fine-tune with $\alpha$ = 0.1 for remaining epochs
     \end{itemize}
 \end{enumerate}
 
@@ -870,13 +870,13 @@ for i in range(10):
     assert vocab_word == dataset_word, "Mismatch!"
 \end{lstlisting}
 
-\textbf{Result:} ✓ All 10 samples matched perfectly
+\textbf{Result:} $\checkmark$ All 10 samples matched perfectly
 
 \subsubsection{Test 2: Loss Sanity Check}
 \begin{itemize}
-    \item Random initialization: CE ≈ $\log(500) = 6.21$ ✓
-    \item Final trained: CE = 5.45 < 6.21 ✓
-    \item VQ loss: 0.36 → 1.06 (increasing as expected) ✓
+    \item Random initialization: CE $\approx$ $\log(500) = 6.21$ $\checkmark$
+    \item Final trained: CE = 5.45 < 6.21 $\checkmark$
+    \item VQ loss: 0.36 $\rightarrow$ 1.06 (increasing as expected) $\checkmark$
 \end{itemize}
 
 \subsubsection{Test 3: Gradient Flow}
@@ -887,7 +887,7 @@ for name, param in model.named_parameters():
         print(f"WARNING: {name} has no gradient!")
 \end{lstlisting}
 
-\textbf{Result:} ✓ All 113M parameters received gradients
+\textbf{Result:} $\checkmark$ All 113M parameters received gradients
 
 \subsubsection{Test 4: Overfitting Single Batch}
 \begin{itemize}
@@ -910,7 +910,7 @@ Train a model with:
 \subsubsection{Test 6: Label Shuffling}
 Randomly shuffle labels during training:
 \begin{itemize}
-    \item Expected: Accuracy ≈ 0.2\% (1/500 chance)
+    \item Expected: Accuracy $\approx$ 0.2\% (1/500 chance)
     \item Loss converges to $\log(500) = 6.21$
     \item \textbf{Benefit:} Confirms model is learning label-signal correspondence
 \end{itemize}
@@ -955,43 +955,43 @@ tqdm==4.65.0
 \subsection{Reproducibility Checklist}
 
 \begin{enumerate}
-    \item ✓ Fixed random seeds (42) throughout
-    \item ✓ Deterministic CUDA operations enabled
-    \item ✓ All hyperparameters documented in config files
-    \item ✓ Training logs saved (training\_history.json)
-    \item ✓ Model checkpoints saved every 5 epochs
-    \item ✓ GitHub repository public and documented
-    \item ✓ Dataset preprocessing scripts included
-    \item ✓ Verification tools provided
+    \item $\checkmark$ Fixed random seeds (42) throughout
+    \item $\checkmark$ Deterministic CUDA operations enabled
+    \item $\checkmark$ All hyperparameters documented in config files
+    \item $\checkmark$ Training logs saved (training\_history.json)
+    \item $\checkmark$ Model checkpoints saved every 5 epochs
+    \item $\checkmark$ GitHub repository public and documented
+    \item $\checkmark$ Dataset preprocessing scripts included
+    \item $\checkmark$ Verification tools provided
 \end{enumerate}
 
 \subsection{Repository Structure}
 
 \begin{lstlisting}[basicstyle=\ttfamily\footnotesize]
 model_custom/
-├── config/
-│   └── belt_config.yaml          # All hyperparameters
-├── data/
-│   ├── dataset.py                # Dataset classes
-│   ├── splits.py                 # Train/dev/test splitting
-│   └── vocabulary.py             # Vocabulary building
-├── models/
-│   ├── dconformer.py             # D-Conformer encoder
-│   ├── vector_quantizer.py       # VQ codebook
-│   └── classifier.py             # Classification head
-├── training/
-│   ├── losses.py                 # CE + CL + VQ losses
-│   ├── trainer.py                # Training loop
-│   └── metrics.py                # Accuracy computation
-├── experiments/
-│   └── model_with_bootstrapping.py  # Main training script
-├── results/
-│   ├── main_results/             # Best model checkpoints
-│   └── no_contrastive_backup/    # Backup of α=0 training
-├── verify_results.py             # Authenticity verification
-├── analyze_training.py           # Comprehensive analysis
-├── ANALYSIS_RESULTS.txt          # Generated analysis
-└── README.md                     # Documentation
+|-- config/
+|   +-- belt_config.yaml          # All hyperparameters
+|-- data/
+|   |-- dataset.py                # Dataset classes
+|   |-- splits.py                 # Train/dev/test splitting
+|   +-- vocabulary.py             # Vocabulary building
+|-- models/
+|   |-- dconformer.py             # D-Conformer encoder
+|   |-- vector_quantizer.py       # VQ codebook
+|   +-- classifier.py             # Classification head
+|-- training/
+|   |-- losses.py                 # CE + CL + VQ losses
+|   |-- trainer.py                # Training loop
+|   +-- metrics.py                # Accuracy computation
+|-- experiments/
+|   +-- model_with_bootstrapping.py  # Main training script
+|-- results/
+|   |-- main_results/             # Best model checkpoints
+|   +-- no_contrastive_backup/    # Backup of $\alpha$=0 training
+|-- verify_results.py             # Authenticity verification
+|-- analyze_training.py           # Comprehensive analysis
+|-- ANALYSIS_RESULTS.txt          # Generated analysis
++-- README.md                     # Documentation
 \end{lstlisting}
 
 \section{Conclusions}
@@ -1015,7 +1015,7 @@ model_custom/
     
     \item \textbf{Ablation Study Findings:}
     \begin{itemize}
-        \item Contrastive loss blocks CE learning at all tested weights (α = 0.1 to 0.9)
+        \item Contrastive loss blocks CE learning at all tested weights ($\alpha$ = 0.1 to 0.9)
         \item Initial loss penalty: +14\% when adding contrastive
         \item Model without contrastive performs comparably to paper \textit{with} contrastive
     \end{itemize}
@@ -1098,7 +1098,7 @@ Potential applications include:
 
 \textbf{For immediate follow-up work:}
 \begin{enumerate}
-    \item Continue using α = 0.0 (no contrastive) configuration
+    \item Continue using $\alpha$ = 0.0 (no contrastive) configuration
     \item Switch to AdamW optimizer with lr = $1 \times 10^{-4}$
     \item Reduce dropout from 0.3 to 0.2
     \item Train for 80 epochs to ensure full convergence
@@ -1169,8 +1169,8 @@ Weight decay & $1 \times 10^{-4}$ \\
 Batch size & 64 \\
 Epochs & 60 \\
 Scheduler & CosineAnnealingLR \\
-Contrastive weight (α) & 0.0 \\
-VQ weight (λ) & 1.0 \\
+Contrastive weight ($\alpha$) & 0.0 \\
+VQ weight ($\lambda$) & 1.0 \\
 \bottomrule
 \end{tabular}
 \caption{Complete hyperparameter configuration}
