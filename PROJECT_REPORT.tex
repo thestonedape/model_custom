@@ -16,6 +16,7 @@
 \usepackage{algorithm}
 \usepackage{algorithmic}
 \usepackage{enumitem}
+\usepackage{textcomp}  % For \textless and \textgreater
 
 % Hyperref setup
 \hypersetup{
@@ -158,7 +159,7 @@ p(w | b) = \text{softmax}(W_c \cdot b + b_c)
 
 \textbf{Critical Bugs Identified \& Fixed:}
 \begin{enumerate}
-    \item \textbf{Special Token Pollution:} BART tokens (\texttt{<s>}, \texttt{</s>}, \texttt{<pad>}) were included in word embeddings, averaging with actual word content:
+    \item \textbf{Special Token Pollution:} BART tokens (\texttt{\textless s\textgreater}, \texttt{\textless /s\textgreater}, \texttt{\textless pad\textgreater}) were included in word embeddings, averaging with actual word content:
     \begin{lstlisting}[caption=Special Token Filtering]
 # Filter BART special tokens (IDs: 0, 1, 2)
 mask = (word_ids != 0) & (word_ids != 1) & (word_ids != 2)
@@ -582,7 +583,7 @@ codebook_loss = F.mse_loss(quantized, z_e.detach())  # FIXED
 \subsection{Bug 2: Contrastive Loss Special Token Pollution}
 
 \subsubsection{Problem}
-BART special tokens (\texttt{<s>}, \texttt{</s>}, \texttt{<pad>}) were included in word embedding averages:
+BART special tokens (\texttt{\textless s\textgreater}, \texttt{\textless /s\textgreater}, \texttt{\textless pad\textgreater}) were included in word embedding averages:
 
 \begin{lstlisting}[caption=Original Code (Buggy)]
 # All tokens averaged (includes special tokens)
