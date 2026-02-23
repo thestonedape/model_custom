@@ -192,6 +192,12 @@ class BELTTrainer:
                 print(f"  Batch {batch_idx}/{len(self.train_loader)} | "
                       f"Loss: {loss_dict['L_total']:.4f} | "
                       f"Time: {elapsed:.1f}s")
+            
+            # Early stopping for quick tests
+            max_batches = self.config.get('max_train_batches', None)
+            if max_batches and batch_idx >= max_batches:
+                print(f"\n  Early stop: reached max_train_batches={max_batches}")
+                break
         
         # Print epoch summary
         self.train_metrics.print_summary(prefix=f"Epoch {epoch} Train")

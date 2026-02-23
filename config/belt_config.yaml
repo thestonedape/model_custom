@@ -44,10 +44,11 @@ model:
 
 # Training Configuration (Section IV-B)
 training:
-  epochs: 60
+  epochs: 1  # Quick test: just 1 epoch
   batch_size: 64
   learning_rate: 1.0e-4  # Reduced from 1e-3 (was diverging)
   optimizer: "sgd"
+  max_train_batches: 200  # Fast test: stop after 200 batches
   momentum: 0.9
   weight_decay: 1.0e-4
   scheduler: "cosine"  # CosineAnnealingLR
