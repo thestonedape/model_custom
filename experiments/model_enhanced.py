@@ -138,9 +138,9 @@ class BELTEnhancedModel(nn.Module):
     
     def _add_drop_path_to_encoder(self, drop_path_rate):
         """Add DropPath to encoder's residual connections"""
-        num_layers = len(self.encoder.layers)
+        num_layers = len(self.encoder.conformer_blocks)
         
-        for i, layer in enumerate(self.encoder.layers):
+        for i, layer in enumerate(self.encoder.conformer_blocks):
             # Add DropPath after each Conformer block
             layer.drop_path = LinearScheduleDropPath(
                 drop_prob_max=drop_path_rate,
@@ -148,13 +148,14 @@ class BELTEnhancedModel(nn.Module):
                 num_layers=num_layers
             )
     
-    def forward(self, x, return_vq_loss=False):
+    def forward(self, x, return_vq_loss=False, use_vq=True):
         """
         Forward pass
         
         Args:
             x: EEG input [batch_size, seq_len, input_dim]
             return_vq_loss: Whether to return VQ loss
+            use_vq: Whether to route through VQ layer (False bypasses it entirely)
         
         Returns:
             logits: Classification logits [batch_size, num_classes]
@@ -162,13 +163,22 @@ class BELTEnhancedModel(nn.Module):
             quantized: Quantized embeddings (if return_vq_loss=True)
         """
         # Encode with D-Conformer
-        encoded = self.encoder(x)  # [batch_size, seq_len, d_model]
+        encoded = self.encoder(x)  # [batch, d_model] or [batch, seq_len, d_model]
         
-        # Average pool over sequence
-        pooled = encoded.mean(dim=1)  # [batch_size, d_model]
+        # Pool over sequence dimension only if 3D
+        if encoded.dim() == 3:
+            pooled = encoded.mean(dim=1)  # [batch, d_model]
+        else:
+            pooled = encoded  # Already [batch, d_model]
         
-        # Vector quantization
-        vq_loss, quantized, _, _ = self.vq(pooled)
+        if use_vq:
+            # Vector quantization (only when VQ loss is active)
+            vq_loss, quantized, _, _ = self.vq(pooled)
+        else:
+            # Bypass VQ — pass encoder output directly to classifier
+            # Avoids frozen random codebook acting as a destructive bottleneck
+            vq_loss = torch.tensor(0.0, device=x.device)
+            quantized = pooled
         
         # Classification
         logits = self.classifier(quantized)
@@ -238,16 +248,22 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion_dict, device,
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     
     for batch_idx, batch in enumerate(pbar):
-        eeg_data = batch['eeg'].to(device)
-        labels = batch['label'].to(device)
-        word_embeddings = batch['word_embedding'].to(device)
+        eeg_data, labels, words = batch
+        eeg_data = eeg_data.to(device)
+        labels = labels.to(device)
         
         # Apply MixUp if enabled
         if use_mixup:
             eeg_data, labels_a, labels_b, lam = mixup(eeg_data, labels)
         
-        # Forward pass
-        logits, vq_loss, quantized = model(eeg_data, return_vq_loss=True)
+        # Forward pass (bypass VQ entirely when lambda_vq=0)
+        use_vq_loss = lambda_vq > 0
+        if use_vq_loss:
+            logits, vq_loss, quantized = model(eeg_data, return_vq_loss=True, use_vq=True)
+        else:
+            logits = model(eeg_data, return_vq_loss=False, use_vq=False)
+            vq_loss = torch.tensor(0.0, device=device)
+            quantized = None
         
         # Classification loss (with MixUp if applied)
         if use_mixup:
@@ -255,8 +271,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion_dict, device,
         else:
             loss_ce = criterion_ce(logits, labels)
         
-        # Contrastive loss (with bootstrapping)
-        loss_cl = criterion_cl(quantized, word_embeddings, labels)
+        # Contrastive loss (only if alpha > 0 and quantized is available)
+        if alpha > 0 and quantized is not None:
+            loss_cl = criterion_cl(quantized, list(words))
+        else:
+            loss_cl = torch.tensor(0.0, device=device)
         
         # Total loss
         loss = loss_ce + alpha * loss_cl + lambda_vq * vq_loss
@@ -280,8 +299,6 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion_dict, device,
         pbar.set_postfix({
             'loss': f"{loss.item():.4f}",
             'ce': f"{loss_ce.item():.4f}",
-            'cl': f"{loss_cl.item():.4f}",
-            'vq': f"{vq_loss.item():.4f}",
             'lr': f"{optimizer.param_groups[0]['lr']:.2e}"
         })
     
@@ -312,17 +329,16 @@ def evaluate(model, dataloader, criterion_dict, device, config):
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating"):
-            eeg_data = batch['eeg'].to(device)
-            labels = batch['label'].to(device)
-            word_embeddings = batch['word_embedding'].to(device)
+            eeg_data, labels, words = batch
+            eeg_data = eeg_data.to(device)
+            labels = labels.to(device)
             
-            # Forward pass
-            logits, vq_loss, quantized = model(eeg_data, return_vq_loss=True)
+            # Forward pass (bypass VQ when lambda_vq=0)
+            logits = model(eeg_data, return_vq_loss=False, use_vq=(lambda_vq > 0))
             
             # Losses
             loss_ce = criterion_ce(logits, labels)
-            loss_cl = criterion_cl(quantized, word_embeddings, labels)
-            loss = loss_ce + alpha * loss_cl + lambda_vq * vq_loss
+            loss = loss_ce
             
             total_loss += loss.item()
             num_batches += 1
@@ -441,10 +457,10 @@ def main():
     optimizer_cfg = config['training']['optimizer']
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=optimizer_cfg['lr'],
-        weight_decay=optimizer_cfg['weight_decay'],
-        betas=tuple(optimizer_cfg['betas']),
-        eps=optimizer_cfg['eps']
+        lr=float(optimizer_cfg['lr']),
+        weight_decay=float(optimizer_cfg['weight_decay']),
+        betas=tuple(float(b) for b in optimizer_cfg['betas']),
+        eps=float(optimizer_cfg['eps'])
     )
     
     # Scheduler (Warmup + Cosine)
@@ -453,7 +469,7 @@ def main():
         optimizer=optimizer,
         warmup_epochs=scheduler_cfg['warmup_epochs'],
         total_epochs=config['training']['num_epochs'],
-        min_lr=scheduler_cfg['min_lr']
+        min_lr=float(scheduler_cfg['min_lr'])
     )
     
     # Loss functions
@@ -462,25 +478,30 @@ def main():
     # Classification loss (with label smoothing)
     if loss_cfg.get('use_label_smoothing', False):
         criterion_ce = LabelSmoothingCrossEntropy(
-            num_classes=config['model']['classifier']['num_classes'],
-            smoothing=loss_cfg['label_smoothing']
+            epsilon=loss_cfg['label_smoothing']
         )
-        print(f"[Loss] Using Label Smoothing (ε={loss_cfg['label_smoothing']})")
+        print(f"[Loss] Using Label Smoothing (eps={loss_cfg['label_smoothing']})")
     elif loss_cfg.get('use_focal_loss', False):
         criterion_ce = FocalLoss(
             alpha=loss_cfg['focal_alpha'],
             gamma=loss_cfg['focal_gamma']
         )
-        print(f"[Loss] Using Focal Loss (α={loss_cfg['focal_alpha']}, γ={loss_cfg['focal_gamma']})")
+        print(f"[Loss] Using Focal Loss (alpha={loss_cfg['focal_alpha']}, gamma={loss_cfg['focal_gamma']})")
     else:
         criterion_ce = nn.CrossEntropyLoss()
         print("[Loss] Using standard Cross Entropy")
     
-    # Contrastive loss
-    criterion_cl = ContrastiveLoss(temperature=loss_cfg['temperature'])
+    # Contrastive loss (only initialize BART if alpha > 0)
+    alpha_val = float(loss_cfg['alpha'])
+    if alpha_val > 0:
+        criterion_cl = ContrastiveLoss(temperature=float(loss_cfg['temperature']))
+        print(f"[Loss] Contrastive loss enabled (alpha={alpha_val})")
+    else:
+        criterion_cl = None
+        print("[Loss] Contrastive loss DISABLED (alpha=0.0) — proven to block CE learning")
     
     # VQ loss
-    criterion_vq = VectorQuantizerLoss()
+    criterion_vq = None  # VQ loss is returned directly from model forward pass, not needed as a criterion
     
     criterion_dict = {
         'ce': criterion_ce,
@@ -533,10 +554,10 @@ def main():
             print(f"\nEpoch {epoch} Results:")
             print(f"  Train Loss: {train_loss:.4f}")
             print(f"  Val Loss: {val_loss:.4f}")
-            print(f"  Val Top-1:  {val_results['top1']:.2f}%")
-            print(f"  Val Top-3:  {val_results['top3']:.2f}%")
-            print(f"  Val Top-5:  {val_results['top5']:.2f}%")
-            print(f"  Val Top-10: {val_results['top10']:.2f}%")
+            print(f"  Val Top-1:  {val_results['top1_acc']*100:.2f}%")
+            print(f"  Val Top-3:  {val_results['top3_acc']*100:.2f}%")
+            print(f"  Val Top-5:  {val_results['top5_acc']*100:.2f}%")
+            print(f"  Val Top-10: {val_results['top10_acc']*100:.2f}%")
             
             # Save checkpoint
             if epoch % config['training']['save_every'] == 0:
@@ -554,8 +575,8 @@ def main():
                 print(f"\n[Save] Checkpoint saved to: {checkpoint_path}")
             
             # Save best model
-            if config['training']['save_best'] and val_results['top10'] > best_val_acc:
-                best_val_acc = val_results['top10']
+            if config['training']['save_best'] and val_results['top10_acc'] > best_val_acc:
+                best_val_acc = val_results['top10_acc']
                 best_path = os.path.join(
                     config['training']['save_dir'],
                     'best_model.pt'
@@ -565,7 +586,7 @@ def main():
                     'model_state_dict': model.state_dict(),
                     'val_results': val_results
                 }, best_path)
-                print(f"[Save] Best model saved (Top-10: {best_val_acc:.2f}%)")
+                print(f"[Save] Best model saved (Top-10: {best_val_acc*100:.2f}%)")
         
         # Final test evaluation
         print("\n" + "="*80)
@@ -582,13 +603,14 @@ def main():
         
         print(f"\nTest Results:")
         print(f"  Test Loss: {test_loss:.4f}")
-        print(f"  Test Top-1:  {test_results['top1']:.2f}%")
-        print(f"  Test Top-3:  {test_results['top3']:.2f}%")
-        print(f"  Test Top-5:  {test_results['top5']:.2f}%")
-        print(f"  Test Top-10: {test_results['top10']:.2f}%")
+        print(f"  Test Top-1:  {test_results['top1_acc']*100:.2f}%")
+        print(f"  Test Top-3:  {test_results['top3_acc']*100:.2f}%")
+        print(f"  Test Top-5:  {test_results['top5_acc']*100:.2f}%")
+        print(f"  Test Top-10: {test_results['top10_acc']*100:.2f}%")
         
         print("\n[Training] Training complete!")
 
 
 if __name__ == "__main__":
     main()
+
