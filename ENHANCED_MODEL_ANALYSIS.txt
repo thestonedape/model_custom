@@ -110,6 +110,34 @@ ATTEMPT 3 (lambda_vq=0.0):
   Result:  Plateau at 29.7-29.9% for ALL 13 epochs (flat from epoch 2 onwards)
   Smoking gun: Val Top-1 FROZEN at exactly 6.94% across all 13 epochs
 
+PLATEAU RUN DATA — Full 13-epoch table (VQ active but frozen, lambda_vq=0.0):
+
+  Epoch | Train Loss | Top-10  | Notes
+  ------|-----------|---------|------
+    1   |  5.7681   | 29.73%  | Best saved
+    2   |  5.5398   | 29.95%  | Best saved ← peak of entire run
+    3   |  5.5346   | 29.84%  |
+    4   |  5.5336   | 29.80%  |
+    5   |  5.5264   | 29.90%  | Warmup ended (LR peaked at 5e-4)
+    6   |  5.5234   | 29.74%  | Cosine decay began
+    7   |  5.5219   | 29.88%  |
+    8   |  5.5216   | 29.83%  |
+    9   |  5.5179   | 29.84%  |
+   10   |  5.5165   | 29.85%  |
+   11   |  5.5161   | 29.89%  |
+   12   |  5.5162   | 29.83%  |
+   13   |  5.5158   | 29.90%  | Stopped here
+
+  Observations:
+  - Train loss delta epochs 2→13: only 0.024 (5.5398 → 5.5158) — essentially zero
+  - Val Top-10 range across all 13 epochs: 29.73% – 29.95% (0.22% spread)
+  - Top-1 frozen at EXACTLY 6.94% on EVERY epoch — impossible without a bug
+  - Confirmed root cause: VQ codebook frozen at random init acts as fixed hash
+    function, classifier learns to map random buckets → words, but encoder
+    cannot meaningfully update because its outputs are always discretized to
+    the same random codes. Straight-through gradient exists but encoder is
+    fighting a fixed destructive bottleneck.
+
 CURRENT FIX — VQ bypass (use_vq=False):
   When lambda_vq=0, encoder output passes DIRECTLY to classifier, VQ skipped.
   Clean gradient flow: CE loss → classifier → encoder (no discretization bottleneck)
@@ -129,14 +157,12 @@ Config:
   VQ:             BYPASSED (use_vq=False, lambda_vq=0.0)
   Contrastive:    DISABLED (alpha=0.0)
 
-Epoch-by-epoch results (Val set):
+Epoch-by-epoch results (Val set) — VQ BYPASS RUN:
 
-  Epoch | Train Loss | Top-1  | Top-5  | Top-10 | Best?
+  Epoch | Train Loss | Top-1  | Top-5  | Top-10 | Notes
   ------|-----------|--------|--------|--------|------
-    1   |   5.6174  |  6.94% | 20.36% | 29.69% |  ✓
-    2   |   ?       |   ?    |   ?    |   ?    |
-
-  [Training is currently LIVE — epoch 2 running as of file creation]
+    1   |  5.6174   |  6.94% | 20.36% | 29.69% | Best saved
+    2+  |  [ongoing — check results/enhanced_training_log.txt for live data]
 
 Expected trajectory (if fix works):
   Epochs 1-5  (warmup):   ~29-30%   (LR ramping, model settling)
