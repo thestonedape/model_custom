@@ -1,0 +1,93 @@
+model:
+  name: BELT-Enhanced-Alpha01-Clean
+  encoder:
+    input_dim: 840
+    num_layers: 6
+    d_model: 840
+    num_heads: 8
+    ff_expansion: 4
+    conv_kernel_size: 31
+    dropout: 0.1
+    use_drop_path: true
+    drop_path_rate: 0.1
+  vq:
+    codebook_size: 1024
+    codebook_dim: 840
+    beta: 0.25
+  classifier:
+    hidden_dims:
+    - 512
+    - 256
+    num_classes: 500
+    use_multi_sample_dropout: true
+    multi_sample_num: 5
+data:
+  dataset_path: ./dataset
+  word_embeddings:
+    model_name: facebook/bart-base
+    embedding_dim: 768
+    freeze_bart: true
+  use_mixup: true
+  mixup_alpha: 0.2
+  mixup_prob: 1.0
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+training:
+  num_epochs: 60
+  optimizer:
+    name: adamw
+    lr: 0.0005
+    weight_decay: 0.01
+    betas:
+    - 0.9
+    - 0.999
+    eps: 1.0e-08
+  scheduler:
+    name: warmup_cosine
+    warmup_epochs: 5
+    min_lr: 1.0e-07
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+  loss:
+    use_label_smoothing: true
+    label_smoothing: 0.1
+    use_focal_loss: false
+    focal_alpha: 1.0
+    focal_gamma: 2.0
+    alpha: 0.1
+    temperature: 0.07
+    lambda_vq: 0.05
+  save_dir: ./results/rerun_alpha01_checkpoints
+  save_every: 5
+  save_best: true
+  log_dir: ./results/rerun_alpha01_logs
+  log_every: 10
+  use_early_stopping: false
+  patience: 10
+  min_delta: 0.001
+evaluation:
+  metrics:
+  - top1
+  - top3
+  - top5
+  - top10
+  use_tta: false
+  tta_num_samples: 5
+  batch_size: 128
+ensemble:
+  enabled: false
+  num_models: 3
+  seeds:
+  - 42
+  - 123
+  - 456
+  aggregation: average
+device:
+  use_cuda: true
+  cuda_device: 0
+seed: 42

@@ -1,0 +1,75 @@
+PROJECT NOTE 1
+Replica Model (Current Codebase State)
+Date: February 25, 2026
+
+1) What this replica currently is
+- Main entry script: experiments/model_with_bootstrapping.py
+- Core trainer: training/trainer.py
+- Main config: config/belt_config.yaml
+- Main reported artifact: results/main_results/final_results.json
+
+Important current-state note:
+- The stored replica artifact in results/main_results/final_results.json has L_cl = 0.0.
+- So the currently reported replica result corresponds to a no-contrastive run behavior,
+  even though the script name is "with_bootstrapping".
+
+2) Exact data pipeline in code
+- Vocabulary loaded from: data/vocabulary_top500.pkl
+- Sentence splits loaded from: data/sentence_splits.pkl
+- Dataloaders created by: data/sentence_dataset.py -> create_sentence_dataloaders(...)
+- EEG features per word are flattened 840-d vectors (105 electrodes x 8 bands).
+
+3) Exact model architecture in code
+- Encoder: DConformer
+  - d_model=840, num_blocks=6, num_heads=8, ffn_expansion=4, conv_kernel_size=31, dropout=0.1
+  - files: models/dconformer.py + models/conformer_block.py + models/convolution_module.py
+- Vector Quantizer:
+  - input_dim=840, codebook_size=1024, codebook_dim=1024, beta=0.3
+  - file: models/vector_quantizer.py
+- Classifier:
+  - input_dim=1024 -> [512, 256] -> 500 classes, dropout=0.3
+  - file: models/classifier.py
+
+Forward path used by trainer:
+EEG(840) -> DConformer -> h(840) -> VectorQuantizer -> b(1024) -> MLP -> logits(500)
+
+4) Exact training objective and optimization in code
+- Total loss class in training/losses.py: BELTLosses
+- Formula implemented: L = L_ce + alpha * L_cl + lambda_vq * L_vq
+- For the current saved replica artifact: L_cl reported as 0.0 in final_results.json
+- Optimizer in trainer.py: SGD (momentum=0.9, weight_decay=1e-4)
+- Scheduler in trainer.py: CosineAnnealingLR
+- Main config values currently in config/belt_config.yaml:
+  - epochs=60, batch_size=64, learning_rate=1e-4, grad_clip=1.0
+
+5) Current verified replica result (artifact)
+Source: results/main_results/final_results.json
+- Best dev top10: 29.86%
+- Test top1: 7.38%
+- Test top5: 20.61%
+- Test top10: 29.41%
+- Test loss: 6.5067
+- L_ce: 5.4544, L_vq: 1.0523, L_cl: 0.0
+
+6) Why this replica is not improving further right now
+- Training plateaus very early (best dev top10 reached early, then little to no gain).
+- Current recipe is stable but appears saturated around the 29-30% top10 band.
+- Class-frequency bias is strong (the most frequent word dominates top1 behavior in analysis).
+
+7) What should be done next (replica side)
+Priority A: make evaluations deterministic and repeatable
+- Fix seed protocol and average over multiple seeds for final claims.
+- Reason: small differences (<0.2 top10 points) are otherwise noise.
+
+Priority B: run controlled loss-weight sweeps
+- Grid alpha in {0.0, 0.05, 0.1, 0.2, 0.5, 0.9} and lambda_vq in {0.0, 0.01, 0.05, 0.1, 1.0}.
+- Reason: current setup likely over-weights components that do not improve ranking.
+
+Priority C: mitigate class-collapse pressure
+- Try class-balanced CE or weighted sampler.
+- Track macro-F1 and per-class top1, not only top-k.
+- Reason: top1 collapse can hide behind acceptable top10.
+
+Priority D: lock an ablation matrix
+- Baseline only, +VQ, +contrastive, +optimizer/scheduler changes.
+- Reason: professor-facing claims should isolate each contribution cleanly.

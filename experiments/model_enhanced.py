@@ -1,61 +1,41 @@
 """
-BELT-Enhanced: Training with Proven Enhancements
+BELT-Enhanced training/evaluation script.
 
-This script implements BELT with multiple proven enhancements from literature:
-1. Label Smoothing (Müller et al., NeurIPS 2019)
-2. AdamW Optimizer (Loshchilov & Hutter, ICLR 2019)
-3. Warmup + Cosine LR Schedule (Goyal et al., 2017)
-4. Gradient Clipping (Pascanu et al., 2013)
-5. MixUp Augmentation (Zhang et al., ICLR 2018)
-6. Stochastic Depth (Huang et al., ECCV 2016)
-7. Multi-Sample Dropout (Gal & Ghahramani, ICML 2016)
-
-Expected Performance:
-- Baseline BELT: 31.04% top-10 accuracy
-- BELT-Enhanced: 37-39% top-10 accuracy
-- BELT-Ensemble (3 models): 39-41% top-10 accuracy
-
-Usage:
-    python model_custom/experiments/model_enhanced.py \
-        --config model_custom/config/enhanced_config.yaml \
-        --mode train
+This script provides a single, explicit train/eval pipeline and avoids duplicate
+control-flow paths.
 """
 
-import os
-import sys
-import yaml
 import argparse
+import json
+import os
 import random
-import numpy as np
+import sys
 from pathlib import Path
-from tqdm import tqdm
 
+import numpy as np
 import torch
 import torch.nn as nn
+import yaml
 from torch.utils.data import DataLoader
-from transformers import BartModel, BartTokenizer
+from tqdm import tqdm
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-# Import BELT components
-from data.vocabulary import Vocabulary
 from data.sentence_dataset import BELTSentenceDataset, load_sentence_splits
+from data.vocabulary import Vocabulary
 from models.dconformer import DConformer
 from models.vector_quantizer import VectorQuantizer
-from models.classifier import MLPClassifier
+from training.augmentation import MixUp, mixup_criterion
+from training.enhanced_losses import FocalLoss, LabelSmoothingCrossEntropy
 from training.losses import ContrastiveLoss
 from training.metrics import TopKAccuracyTracker
-
-# Import enhancements
-from training.enhanced_losses import LabelSmoothingCrossEntropy, FocalLoss
-from training.schedulers import WarmupCosineSchedule
-from training.augmentation import MixUp, mixup_criterion
 from training.regularization import LinearScheduleDropPath, MultiSampleDropoutClassifier
+from training.schedulers import WarmupCosineSchedule
 
 
-def set_seed(seed):
-    """Set random seed for reproducibility"""
+def set_seed(seed: int):
+    """Set random seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -67,423 +47,487 @@ def set_seed(seed):
 
 
 class BELTEnhancedModel(nn.Module):
-    """
-    Enhanced BELT Model with all improvements
-    
-    Architecture:
-        EEG → D-Conformer (with DropPath) → Vector Quantizer → MLP Classifier (with Multi-Sample Dropout)
-    
-    Enhancements:
-        - Stochastic Depth in Conformer blocks
-        - Multi-Sample Dropout in classifier
-    """
-    
+    """Enhanced BELT model."""
+
     def __init__(self, config):
         super().__init__()
-        
-        self.config = config
-        model_cfg = config['model']
-        
-        # D-Conformer Encoder (with optional DropPath)
+        model_cfg = config["model"]
+
         self.encoder = DConformer(
-            d_model=model_cfg['encoder']['d_model'],
-            num_blocks=model_cfg['encoder']['num_layers'],
-            num_heads=model_cfg['encoder']['num_heads'],
-            ffn_expansion=model_cfg['encoder']['ff_expansion'],
-            conv_kernel_size=model_cfg['encoder']['conv_kernel_size'],
-            dropout=model_cfg['encoder']['dropout']
+            d_model=model_cfg["encoder"]["d_model"],
+            num_blocks=model_cfg["encoder"]["num_layers"],
+            num_heads=model_cfg["encoder"]["num_heads"],
+            ffn_expansion=model_cfg["encoder"]["ff_expansion"],
+            conv_kernel_size=model_cfg["encoder"]["conv_kernel_size"],
+            dropout=model_cfg["encoder"]["dropout"],
         )
-        
-        # Add DropPath to encoder if enabled
-        if model_cfg['encoder'].get('use_drop_path', False):
-            self._add_drop_path_to_encoder(
-                drop_path_rate=model_cfg['encoder']['drop_path_rate']
-            )
-        
-        # Vector Quantizer
+
+        if model_cfg["encoder"].get("use_drop_path", False):
+            self._add_drop_path_to_encoder(model_cfg["encoder"]["drop_path_rate"])
+
         self.vq = VectorQuantizer(
-            input_dim=model_cfg['encoder']['d_model'],
-            codebook_size=model_cfg['vq']['codebook_size'],
-            codebook_dim=model_cfg['vq']['codebook_dim'],
-            beta=model_cfg['vq']['beta']
+            input_dim=model_cfg["encoder"]["d_model"],
+            codebook_size=model_cfg["vq"]["codebook_size"],
+            codebook_dim=model_cfg["vq"]["codebook_dim"],
+            beta=model_cfg["vq"]["beta"],
         )
-        
-        # Base Classifier
-        input_dim = model_cfg['vq']['codebook_dim']
-        hidden_dims = model_cfg['classifier']['hidden_dims']
-        num_classes = model_cfg['classifier']['num_classes']
-        
-        layers = []
+
+        input_dim = model_cfg["vq"]["codebook_dim"]
+        hidden_dims = model_cfg["classifier"]["hidden_dims"]
+        num_classes = model_cfg["classifier"]["num_classes"]
+
         dims = [input_dim] + hidden_dims
-        
+        layers = []
         for i in range(len(dims) - 1):
-            layers.extend([
-                nn.Linear(dims[i], dims[i + 1]),
-                nn.ReLU(),
-                nn.Dropout(0.5)
-            ])
-        
+            layers.extend([nn.Linear(dims[i], dims[i + 1]), nn.ReLU(), nn.Dropout(0.5)])
         layers.append(nn.Linear(dims[-1], num_classes))
         base_classifier = nn.Sequential(*layers)
-        
-        # Wrap with Multi-Sample Dropout if enabled
-        if model_cfg['classifier'].get('use_multi_sample_dropout', False):
+
+        if model_cfg["classifier"].get("use_multi_sample_dropout", False):
             self.classifier = MultiSampleDropoutClassifier(
                 base_classifier=base_classifier,
                 dropout_p=0.5,
-                num_samples=model_cfg['classifier']['multi_sample_num']
+                num_samples=model_cfg["classifier"]["multi_sample_num"],
             )
         else:
             self.classifier = base_classifier
-    
-    def _add_drop_path_to_encoder(self, drop_path_rate):
-        """Add DropPath to encoder's residual connections"""
+
+    def _add_drop_path_to_encoder(self, drop_path_rate: float):
+        """Attach per-layer scheduled DropPath to Conformer blocks."""
         num_layers = len(self.encoder.conformer_blocks)
-        
         for i, layer in enumerate(self.encoder.conformer_blocks):
-            # Add DropPath after each Conformer block
             layer.drop_path = LinearScheduleDropPath(
                 drop_prob_max=drop_path_rate,
                 layer_idx=i,
-                num_layers=num_layers
+                num_layers=num_layers,
             )
-    
+
     def forward(self, x, return_vq_loss=False, use_vq=True):
-        """
-        Forward pass
-        
-        Args:
-            x: EEG input [batch_size, seq_len, input_dim]
-            return_vq_loss: Whether to return VQ loss
-            use_vq: Whether to route through VQ layer (False bypasses it entirely)
-        
-        Returns:
-            logits: Classification logits [batch_size, num_classes]
-            vq_loss: Vector quantizer loss (if return_vq_loss=True)
-            quantized: Quantized embeddings (if return_vq_loss=True)
-        """
-        # Encode with D-Conformer
-        encoded = self.encoder(x)  # [batch, d_model] or [batch, seq_len, d_model]
-        
-        # Pool over sequence dimension only if 3D
-        if encoded.dim() == 3:
-            pooled = encoded.mean(dim=1)  # [batch, d_model]
-        else:
-            pooled = encoded  # Already [batch, d_model]
-        
+        """Forward pass."""
+        encoded = self.encoder(x)
+        pooled = encoded.mean(dim=1) if encoded.dim() == 3 else encoded
+
         if use_vq:
-            # Vector quantization (only when VQ loss is active)
             vq_loss, quantized, _, _ = self.vq(pooled)
         else:
-            # Bypass VQ — pass encoder output directly to classifier
-            # Avoids frozen random codebook acting as a destructive bottleneck
             vq_loss = torch.tensor(0.0, device=x.device)
             quantized = pooled
-        
-        # Classification
+
         logits = self.classifier(quantized)
-        
         if return_vq_loss:
             return logits, vq_loss, quantized
         return logits
 
 
-def load_bart_embeddings(config, vocabulary):
-    """Load BART embeddings for contrastive learning"""
-    print("\n[BART] Loading BART embeddings for bootstrapping...")
-    
-    embedding_cfg = config['data']['word_embeddings']
-    model_name = embedding_cfg['model_name']
-    
-    # Load BART
-    tokenizer = BartTokenizer.from_pretrained(model_name)
-    bart_model = BartModel.from_pretrained(model_name)
-    
-    # Extract embeddings
-    word_embeddings = []
-    for word in vocabulary.idx_to_word:
-        # Tokenize and get embedding
-        tokens = tokenizer.encode(word, add_special_tokens=False)
-        if len(tokens) > 0:
-            token_id = tokens[0]
-            embedding = bart_model.shared.weight[token_id].detach()
-        else:
-            # Fallback for unknown words
-            embedding = torch.zeros(embedding_cfg['embedding_dim'])
-        
-        word_embeddings.append(embedding)
-    
-    # Stack into tensor [vocab_size, embedding_dim]
-    word_embeddings = torch.stack(word_embeddings)
-    
-    print(f"[BART] Loaded embeddings: {word_embeddings.shape}")
-    return word_embeddings
+def build_device(config):
+    """Select and print device information."""
+    device = torch.device("cuda" if torch.cuda.is_available() and config["device"]["use_cuda"] else "cpu")
+    print(f"\n[Device] Using: {device}")
+    if device.type == "cuda":
+        print(f"[CUDA] Device count: {torch.cuda.device_count()}")
+        print(f"[CUDA] Current device: {torch.cuda.current_device()}")
+        print(f"[CUDA] Device name: {torch.cuda.get_device_name(device)}")
+    return device
+
+
+def build_dataloaders(config, vocab, splits):
+    """Create train/val/test dataloaders from sentence-level splits."""
+    print("\n[Data] Creating datasets from sentence-level splits...")
+
+    train_dataset = BELTSentenceDataset(
+        sentence_list=splits["train"],
+        vocabulary=vocab,
+        split="train",
+        eeg_type="GD",
+    )
+    val_dataset = BELTSentenceDataset(
+        sentence_list=splits["dev"],
+        vocabulary=vocab,
+        split="dev",
+        eeg_type="GD",
+    )
+    test_dataset = BELTSentenceDataset(
+        sentence_list=splits["test"],
+        vocabulary=vocab,
+        split="test",
+        eeg_type="GD",
+    )
+
+    train_batch_size = config["training"].get("batch_size", config["data"]["batch_size"])
+    eval_batch_size = config["evaluation"]["batch_size"]
+    num_workers = config["data"]["num_workers"]
+    pin_memory = config["data"]["pin_memory"]
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=train_batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=eval_batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=eval_batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
+    print(
+        f"[Data] Samples - train: {len(train_dataset):,}, val: {len(val_dataset):,}, "
+        f"test: {len(test_dataset):,}"
+    )
+    return train_loader, val_loader, test_loader
+
+
+def build_optimizer_and_scheduler(model, config):
+    """Build AdamW optimizer and warmup-cosine scheduler."""
+    optimizer_cfg = config["training"]["optimizer"]
+    scheduler_cfg = config["training"]["scheduler"]
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(optimizer_cfg["lr"]),
+        weight_decay=float(optimizer_cfg["weight_decay"]),
+        betas=tuple(float(b) for b in optimizer_cfg["betas"]),
+        eps=float(optimizer_cfg["eps"]),
+    )
+    scheduler = WarmupCosineSchedule(
+        optimizer=optimizer,
+        warmup_epochs=scheduler_cfg["warmup_epochs"],
+        total_epochs=config["training"]["num_epochs"],
+        min_lr=float(scheduler_cfg["min_lr"]),
+    )
+    return optimizer, scheduler
+
+
+def build_loss_functions(config, device):
+    """Build CE/focal/label-smoothing and optional contrastive losses."""
+    loss_cfg = config["training"]["loss"]
+
+    if loss_cfg.get("use_label_smoothing", False):
+        criterion_ce = LabelSmoothingCrossEntropy(epsilon=loss_cfg["label_smoothing"])
+        print(f"[Loss] Label smoothing enabled (eps={loss_cfg['label_smoothing']})")
+    elif loss_cfg.get("use_focal_loss", False):
+        criterion_ce = FocalLoss(alpha=loss_cfg["focal_alpha"], gamma=loss_cfg["focal_gamma"])
+        print(f"[Loss] Focal loss enabled (alpha={loss_cfg['focal_alpha']}, gamma={loss_cfg['focal_gamma']})")
+    else:
+        criterion_ce = nn.CrossEntropyLoss()
+        print("[Loss] Standard CrossEntropy enabled")
+
+    alpha = float(loss_cfg["alpha"])
+    if alpha > 0:
+        emb_cfg = config.get("data", {}).get("word_embeddings", {})
+        bart_model_name = emb_cfg.get("model_name", "facebook/bart-base")
+        word_dim = int(emb_cfg.get("embedding_dim", 768))
+        eeg_dim = int(config["model"]["vq"]["codebook_dim"])
+        freeze_bart = bool(emb_cfg.get("freeze_bart", True))
+        criterion_cl = ContrastiveLoss(
+            eeg_dim=eeg_dim,
+            word_dim=word_dim,
+            bart_model_name=bart_model_name,
+            temperature=float(loss_cfg["temperature"]),
+            freeze_bart=freeze_bart,
+        ).to(device)
+        print(f"[Loss] Contrastive enabled (alpha={alpha}, bart={bart_model_name})")
+    else:
+        criterion_cl = None
+        print("[Loss] Contrastive disabled (alpha=0.0)")
+
+    return {"ce": criterion_ce, "cl": criterion_cl, "vq": None}
+
+
+def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, device="cpu"):
+    """Load checkpoint and optionally optimizer/scheduler state."""
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
+
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    epoch = int(checkpoint.get("epoch", 0))
+    best_val_acc = float(checkpoint.get("best_val_acc", checkpoint.get("val_results", {}).get("top10_acc", 0.0)))
+    return epoch, best_val_acc
+
+
+def save_checkpoint(path, epoch, model, optimizer, scheduler, val_results, best_val_acc):
+    """Save a checkpoint with full training state."""
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "val_results": val_results,
+            "best_val_acc": best_val_acc,
+        },
+        path,
+    )
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, criterion_dict, device, config, epoch):
-    """Train for one epoch"""
+    """Train for one epoch."""
     model.train()
-    
+
+    criterion_ce = criterion_dict["ce"]
+    criterion_cl = criterion_dict["cl"]
+    alpha = float(config["training"]["loss"]["alpha"])
+    lambda_vq = float(config["training"]["loss"]["lambda_vq"])
+
+    use_mixup = config["data"].get("use_mixup", False)
+    mixup = MixUp(alpha=config["data"]["mixup_alpha"], prob=config["data"]["mixup_prob"]) if use_mixup else None
+
     total_loss = 0.0
     num_batches = 0
-    
-    # Get loss functions
-    criterion_ce = criterion_dict['ce']
-    criterion_cl = criterion_dict['cl']
-    criterion_vq = criterion_dict['vq']
-    
-    # Get loss weights
-    alpha = config['training']['loss']['alpha']
-    lambda_vq = config['training']['loss']['lambda_vq']
-    
-    # MixUp augmentation
-    use_mixup = config['data'].get('use_mixup', False)
-    if use_mixup:
-        mixup = MixUp(
-            alpha=config['data']['mixup_alpha'],
-            prob=config['data']['mixup_prob']
-        )
-    
-    # Progress bar
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    
-    for batch_idx, batch in enumerate(pbar):
-        eeg_data, labels, words = batch
+
+    for eeg_data, labels, words in pbar:
         eeg_data = eeg_data.to(device)
         labels = labels.to(device)
-        
-        # Apply MixUp if enabled
+
         if use_mixup:
             eeg_data, labels_a, labels_b, lam = mixup(eeg_data, labels)
-        
-        # Always use VQ (no bypass)
+
         logits, vq_loss, quantized = model(eeg_data, return_vq_loss=True, use_vq=True)
-        
-        # Classification loss (with MixUp if applied)
+
         if use_mixup:
             loss_ce = mixup_criterion(criterion_ce, logits, labels_a, labels_b, lam)
         else:
             loss_ce = criterion_ce(logits, labels)
-        
-        # Contrastive loss (only if alpha > 0)
+
         if alpha > 0:
-            # Ensure quantized and word embeddings are on the same device
+            if criterion_cl is None:
+                raise RuntimeError("alpha > 0 but contrastive loss is not initialized")
             loss_cl = criterion_cl(quantized.to(device), list(words))
         else:
             loss_cl = torch.tensor(0.0, device=device)
-        
-        # Total loss (lambda_vq may be scheduled for warm start)
+
         loss = loss_ce + alpha * loss_cl + lambda_vq * vq_loss
-        
-        # Backward pass
+
         optimizer.zero_grad()
         loss.backward()
-        
-        # Gradient clipping
-        if config['training']['gradient_clipping']['enabled']:
-            max_norm = config['training']['gradient_clipping']['max_norm']
+
+        if config["training"]["gradient_clipping"]["enabled"]:
+            max_norm = config["training"]["gradient_clipping"]["max_norm"]
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        
+
         optimizer.step()
-        
-        # Accumulate loss
+
         total_loss += loss.item()
         num_batches += 1
-        
-        # Update progress bar
-        pbar.set_postfix({
-            'loss': f"{loss.item():.4f}",
-            'ce': f"{loss_ce.item():.4f}",
-            'lr': f"{optimizer.param_groups[0]['lr']:.2e}"
-        })
-    
-    # Step scheduler
+        pbar.set_postfix(
+            {
+                "loss": f"{loss.item():.4f}",
+                "ce": f"{loss_ce.item():.4f}",
+                "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
+            }
+        )
+
     scheduler.step()
-    
-    avg_loss = total_loss / num_batches
-    return avg_loss
+    return total_loss / max(num_batches, 1)
 
 
-def evaluate(model, dataloader, criterion_dict, device, config):
-    """Evaluate model"""
+@torch.no_grad()
+def evaluate(model, dataloader, criterion_dict, device):
+    """Evaluate on a dataloader."""
     model.eval()
-    
+    criterion_ce = criterion_dict["ce"]
+    metrics = TopKAccuracyTracker(k_values=[1, 3, 5, 10])
+
     total_loss = 0.0
     num_batches = 0
-    
-    # Metrics tracker
-    metrics = TopKAccuracyTracker(k_values=[1, 3, 5, 10])
-    
-    # Get loss functions
-    criterion_ce = criterion_dict['ce']
-    criterion_cl = criterion_dict['cl']
-    criterion_vq = criterion_dict['vq']
-    
-    alpha = config['training']['loss']['alpha']
-    lambda_vq = config['training']['loss']['lambda_vq']
-    
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating"):
-            eeg_data, labels, words = batch
-            eeg_data = eeg_data.to(device)
-            labels = labels.to(device)
-            
-            # Always use VQ (no bypass)
-            logits = model(eeg_data, return_vq_loss=False, use_vq=True)
-            
-            # Losses
-            loss_ce = criterion_ce(logits, labels)
-            loss = loss_ce
-            
-            total_loss += loss.item()
-            num_batches += 1
-            
-            # Update metrics
-            metrics.update(logits, labels)
-    
-    avg_loss = total_loss / num_batches
-    results = metrics.compute()
-    
-    return avg_loss, results
+
+    for eeg_data, labels, _words in tqdm(dataloader, desc="Evaluating"):
+        eeg_data = eeg_data.to(device)
+        labels = labels.to(device)
+
+        logits = model(eeg_data, return_vq_loss=False, use_vq=True)
+        loss_ce = criterion_ce(logits, labels)
+
+        total_loss += loss_ce.item()
+        num_batches += 1
+        metrics.update(logits, labels)
+
+    return total_loss / max(num_batches, 1), metrics.compute()
+
+
+def train_model(
+    model,
+    optimizer,
+    scheduler,
+    criterion_dict,
+    train_loader,
+    val_loader,
+    test_loader,
+    config,
+    device,
+    start_epoch=1,
+    best_val_acc=0.0,
+):
+    """Run the main training loop and final test evaluation."""
+    save_dir = Path(config["training"]["save_dir"])
+    save_dir.mkdir(parents=True, exist_ok=True)
+    Path(config["training"]["log_dir"]).mkdir(parents=True, exist_ok=True)
+
+    num_epochs = int(config["training"]["num_epochs"])
+    save_every = int(config["training"]["save_every"])
+    save_best = bool(config["training"]["save_best"])
+    warm_start_epochs = 3
+
+    lambda_vq_target = float(config["training"]["loss"]["lambda_vq"])
+    best_epoch = max(start_epoch - 1, 0)
+
+    print("\n[Training] Starting training...")
+    for epoch in range(start_epoch, num_epochs + 1):
+        print(f"\n{'=' * 80}")
+        print(f"EPOCH {epoch}/{num_epochs}")
+        print(f"{'=' * 80}")
+
+        config["training"]["loss"]["lambda_vq"] = 0.0 if epoch <= warm_start_epochs else lambda_vq_target
+        print(f"[VQ] lambda_vq for this epoch: {config['training']['loss']['lambda_vq']}")
+
+        train_loss = train_epoch(model, train_loader, optimizer, scheduler, criterion_dict, device, config, epoch)
+        val_loss, val_results = evaluate(model, val_loader, criterion_dict, device)
+
+        print(f"\nEpoch {epoch} Results:")
+        print(f"  Train Loss: {train_loss:.4f}")
+        print(f"  Val Loss: {val_loss:.4f}")
+        print(f"  Val Top-1:  {val_results['top1_acc'] * 100:.2f}%")
+        print(f"  Val Top-3:  {val_results['top3_acc'] * 100:.2f}%")
+        print(f"  Val Top-5:  {val_results['top5_acc'] * 100:.2f}%")
+        print(f"  Val Top-10: {val_results['top10_acc'] * 100:.2f}%")
+
+        if val_results["top10_acc"] > best_val_acc:
+            best_val_acc = val_results["top10_acc"]
+            best_epoch = epoch
+            best_path = save_dir / "best_model.pt"
+            save_checkpoint(best_path, epoch, model, optimizer, scheduler, val_results, best_val_acc)
+            print(f"[Save] Best model saved: {best_path}")
+
+        if epoch % save_every == 0:
+            ckpt_path = save_dir / f"checkpoint_epoch_{epoch}.pt"
+            save_checkpoint(ckpt_path, epoch, model, optimizer, scheduler, val_results, best_val_acc)
+            print(f"[Save] Checkpoint saved: {ckpt_path}")
+
+    config["training"]["loss"]["lambda_vq"] = lambda_vq_target
+
+    best_path = save_dir / "best_model.pt"
+    if best_path.exists():
+        print(f"\n[Eval] Loading best checkpoint: {best_path}")
+        load_checkpoint(best_path, model, device=device)
+    else:
+        print("\n[Eval] Best checkpoint not found; evaluating current in-memory model.")
+
+    test_loss, test_results = evaluate(model, test_loader, criterion_dict, device)
+    print("\nFINAL TEST RESULTS")
+    print(f"  Test Loss: {test_loss:.4f}")
+    print(f"  Test Top-1:  {test_results['top1_acc'] * 100:.2f}%")
+    print(f"  Test Top-3:  {test_results['top3_acc'] * 100:.2f}%")
+    print(f"  Test Top-5:  {test_results['top5_acc'] * 100:.2f}%")
+    print(f"  Test Top-10: {test_results['top10_acc'] * 100:.2f}%")
+
+    results = {
+        "best_val_top10_acc": best_val_acc,
+        "best_epoch": best_epoch,
+        "test_metrics": {
+            "loss": test_loss,
+            "top1_acc": test_results["top1_acc"],
+            "top3_acc": test_results["top3_acc"],
+            "top5_acc": test_results["top5_acc"],
+            "top10_acc": test_results["top10_acc"],
+        },
+    }
+    results_path = save_dir / "final_results.json"
+    with open(results_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+    print(f"[Save] Final results saved: {results_path}")
+
+
+def eval_model(model, criterion_dict, val_loader, test_loader, config, device, checkpoint_path):
+    """Load a checkpoint and run evaluation on val/test sets."""
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    print(f"[Eval] Loading checkpoint: {checkpoint_path}")
+    epoch, best_val_acc = load_checkpoint(checkpoint_path, model, device=device)
+    print(f"[Eval] Loaded epoch={epoch}, best_val_acc={best_val_acc:.4f}")
+
+    val_loss, val_results = evaluate(model, val_loader, criterion_dict, device)
+    test_loss, test_results = evaluate(model, test_loader, criterion_dict, device)
+
+    print("\nEVALUATION RESULTS")
+    print(f"  Val Loss: {val_loss:.4f}")
+    print(f"  Val Top-10: {val_results['top10_acc'] * 100:.2f}%")
+    print(f"  Test Loss: {test_loss:.4f}")
+    print(f"  Test Top-10: {test_results['top10_acc'] * 100:.2f}%")
+
+    out = {
+        "checkpoint": str(checkpoint_path),
+        "val_metrics": {"loss": val_loss, **val_results},
+        "test_metrics": {"loss": test_loss, **test_results},
+    }
+    out_path = Path(config["training"]["save_dir"]) / "eval_results.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2)
+    print(f"[Save] Eval results saved: {out_path}")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='config/enhanced_config.yaml')
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'])
-    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
+    parser.add_argument("--config", type=str, default="config/enhanced_config.yaml")
+    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval"])
+    parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume training")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint path for --mode eval")
     args = parser.parse_args()
-    
-    # Load config
-    with open(args.config, 'r') as f:
+
+    with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    
-    # Set seed
-    set_seed(config['seed'])
-    
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() and config['device']['use_cuda'] else 'cpu')
-    print(f"\n[Device] Using: {device}")
-    if device.type == 'cuda':
-        print(f"[CUDA] Device count: {torch.cuda.device_count()}")
-        print(f"[CUDA] Current device: {torch.cuda.current_device()}")
-        print(f"[CUDA] Device name: {torch.cuda.get_device_name(device)}")
-        print(f"[CUDA] Total memory: {torch.cuda.get_device_properties(device).total_memory / 1024 ** 3:.2f} GB")
-        print(f"[CUDA] Allocated memory: {torch.cuda.memory_allocated(device) / 1024 ** 3:.2f} GB")
-        print(f"[CUDA] Reserved memory: {torch.cuda.memory_reserved(device) / 1024 ** 3:.2f} GB")
-    
-    # Load vocabulary
+
+    set_seed(int(config["seed"]))
+    device = build_device(config)
+
     print("\n[Data] Loading vocabulary...")
     vocab = Vocabulary(vocab_size=500)
     vocab.load("data/vocabulary_top500.pkl")
     print(f"[Data] Vocabulary size: {len(vocab.word2idx)}")
-    
-    # Load sentence-level splits (80/10/10)
-    print("\n[Data] Loading sentence-level splits (80/10/10)...")
-    print("[Data] Using sentence-level splits for fair comparison with BELT paper")
-    
-    splits_path = "data/sentence_splits.pkl"
-    if not Path(splits_path).exists():
+
+    splits_path = Path("data/sentence_splits.pkl")
+    if not splits_path.exists():
         print(f"\nError: Sentence splits not found at {splits_path}")
         print("Please run: python prepare_sentence_splits.py")
         return
-    
-    splits = load_sentence_splits(splits_path)
-    
-    # Create datasets from sentence-level splits
-    print("\n[Data] Creating datasets from sentence-level splits...")
-    train_dataset = BELTSentenceDataset(
-        sentence_list=splits['train'],
-        vocabulary=vocab,
-        split='train',
-        eeg_type='GD'
-    )
-    val_dataset = BELTSentenceDataset(
-        sentence_list=splits['dev'],
-        vocabulary=vocab,
-        split='dev',
-        eeg_type='GD'
-    )
-    # Create DataLoaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['training']['batch_size'] if 'batch_size' in config['training'] else config['data']['batch_size'],
-        shuffle=True,
-        num_workers=config['data']['num_workers'],
-        pin_memory=config['data']['pin_memory']
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['evaluation']['batch_size'],
-        shuffle=False,
-        num_workers=config['data']['num_workers'],
-        pin_memory=config['data']['pin_memory']
-    )
 
-    # Create model
+    print("\n[Data] Loading sentence-level splits (80/10/10)...")
+    splits = load_sentence_splits(str(splits_path))
+    train_loader, val_loader, test_loader = build_dataloaders(config, vocab, splits)
+
     print("\n[Model] Building BELT-Enhanced model...")
     model = BELTEnhancedModel(config).to(device)
-    # Count parameters
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[Model] Trainable parameters: {num_params:,}")
-    # Optimizer (AdamW)
-    print("\n[Training] Setting up optimizer and scheduler...")
-    optimizer_cfg = config['training']['optimizer']
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(optimizer_cfg['lr']),
-        weight_decay=float(optimizer_cfg['weight_decay']),
-        betas=tuple(float(b) for b in optimizer_cfg['betas']),
-        eps=float(optimizer_cfg['eps'])
-    )
-    # Scheduler (Warmup + Cosine)
-    scheduler_cfg = config['training']['scheduler']
-    scheduler = WarmupCosineSchedule(
-        optimizer=optimizer,
-        warmup_epochs=scheduler_cfg['warmup_epochs'],
-        total_epochs=config['training']['num_epochs'],
-        min_lr=float(scheduler_cfg['min_lr'])
-    )
-    # Loss functions
-    loss_cfg = config['training']['loss']
-    # Classification loss (with label smoothing)
-    if loss_cfg.get('use_label_smoothing', False):
-        criterion_ce = LabelSmoothingCrossEntropy(
-            epsilon=loss_cfg['label_smoothing']
-        )
-        print(f"[Loss] Using Label Smoothing (eps={loss_cfg['label_smoothing']})")
-    elif loss_cfg.get('use_focal_loss', False):
-        criterion_ce = FocalLoss(
-            alpha=loss_cfg['focal_alpha'],
-            gamma=loss_cfg['focal_gamma']
-        )
-        print(f"[Loss] Using Focal Loss (alpha={loss_cfg['focal_alpha']}, gamma={loss_cfg['focal_gamma']})")
-    else:
-        criterion_ce = nn.CrossEntropyLoss()
-        print("[Loss] Using standard Cross Entropy")
-    # Contrastive loss (only initialize BART if alpha > 0)
-    alpha_val = float(loss_cfg['alpha'])
-    if alpha_val > 0:
-        criterion_cl = ContrastiveLoss(
-            eeg_dim=840,
-            word_dim=768,
-            temperature=float(loss_cfg['temperature'])
-        ).to(device)
-        print(f"[Loss] Contrastive loss enabled (alpha={alpha_val})")
-    else:
-        criterion_cl = None
-        print("[Loss] Contrastive loss DISABLED (alpha=0.0) — proven to block CE learning")
-    # VQ loss
-    criterion_vq = None  # VQ loss is returned directly from model forward pass, not needed as a criterion
-    criterion_dict = {
-        'ce': criterion_ce,
-        'cl': criterion_cl,
-        'vq': criterion_vq
-    }
-    # Print configuration summary
-    print("\n" + "="*80)
+
+    optimizer, scheduler = build_optimizer_and_scheduler(model, config)
+    criterion_dict = build_loss_functions(config, device)
+
+    optimizer_cfg = config["training"]["optimizer"]
+    scheduler_cfg = config["training"]["scheduler"]
+    print("\n" + "=" * 80)
     print("BELT-ENHANCED CONFIGURATION SUMMARY")
-    print("="*80)
+    print("=" * 80)
     print(f"Model: {config['model']['name']}")
     print(f"Optimizer: {optimizer_cfg['name'].upper()}")
     print(f"Learning Rate: {optimizer_cfg['lr']}")
@@ -493,261 +537,52 @@ def main():
     print(f"MixUp: {config['data'].get('use_mixup', False)}")
     print(f"DropPath: {config['model']['encoder'].get('use_drop_path', False)}")
     print(f"Multi-Sample Dropout: {config['model']['classifier'].get('use_multi_sample_dropout', False)}")
-    print("="*80)
-    # Create save directories
-    os.makedirs(config['training']['save_dir'], exist_ok=True)
-    os.makedirs(config['training']['log_dir'], exist_ok=True)
-    # Training loop
-    if args.mode == 'train':
-        print("\n[Training] Starting training...")
-        best_val_acc = 0.0
-        start_epoch = 1
-        # Resume logic
-        if args.resume is not None and os.path.isfile(args.resume):
-            print(f"[Resume] Loading checkpoint from {args.resume}")
-            checkpoint = torch.load(args.resume, map_location=device)
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                model.load_state_dict(checkpoint)
-            if 'optimizer_state_dict' in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            if 'scheduler_state_dict' in checkpoint:
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            if 'epoch' in checkpoint:
-                start_epoch = checkpoint['epoch'] + 1
-                print(f"[Resume] Resuming from epoch {start_epoch}")
-            if 'val_results' in checkpoint and 'top10_acc' in checkpoint['val_results']:
-                best_val_acc = checkpoint['val_results']['top10_acc']
+    print("=" * 80)
+
+    start_epoch = 1
+    best_val_acc = 0.0
+    if args.mode == "train" and args.resume:
+        resume_path = Path(args.resume)
+        if resume_path.exists():
+            print(f"[Resume] Loading checkpoint: {resume_path}")
+            epoch, best_val_acc = load_checkpoint(
+                resume_path,
+                model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                device=device,
+            )
+            start_epoch = epoch + 1
+            print(f"[Resume] Resuming from epoch {start_epoch}, best_val_acc={best_val_acc:.4f}")
         else:
-            if args.resume is not None:
-                print(f"[Resume] WARNING: Checkpoint file {args.resume} not found. Starting from scratch.")
+            print(f"[Resume] WARNING: checkpoint not found: {resume_path}. Starting from scratch.")
 
-        warm_start_epochs = 3  # Number of epochs to warm start VQ (lambda_vq=0)
-        lambda_vq_config = config['training']['loss']['lambda_vq']
-        for epoch in range(start_epoch, config['training']['num_epochs'] + 1):
-            print(f"\n{'='*80}")
-            print(f"EPOCH {epoch}/{config['training']['num_epochs']}")
-            print(f"{'='*80}")
-            # VQ warm start: use lambda_vq=0 for first N epochs, then config value
-            if epoch <= warm_start_epochs:
-                lambda_vq = 0.0
-            else:
-                lambda_vq = lambda_vq_config
-            config['training']['loss']['lambda_vq'] = lambda_vq
-            print(f"[VQ] lambda_vq for this epoch: {lambda_vq}")
-            # Train
-            train_loss = train_epoch(
-                model, train_loader, optimizer, scheduler,
-                criterion_dict, device, config, epoch
-            )
-            # Validate
-            val_loss, val_results = evaluate(
-                model, val_loader, criterion_dict, device, config
-            )
-            # Print results
-            print(f"\nEpoch {epoch} Results:")
-            print(f"  Train Loss: {train_loss:.4f}")
-            print(f"  Val Loss: {val_loss:.4f}")
-            print(f"  Val Top-1:  {val_results['top1_acc']*100:.2f}%")
-            print(f"  Val Top-3:  {val_results['top3_acc']*100:.2f}%")
-            print(f"  Val Top-5:  {val_results['top5_acc']*100:.2f}%")
-            print(f"  Val Top-10: {val_results['top10_acc']*100:.2f}%")
-            # Save best model
-            if val_results['top10_acc'] > best_val_acc:
-                best_val_acc = val_results['top10_acc']
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'val_results': val_results
-                }, os.path.join(config['training']['save_dir'], 'best_model.pt'))
-                print("[Checkpoint] Best model saved.")
-            # Save every N epochs
-            if epoch % config['training']['save_every'] == 0:
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'val_results': val_results
-                }, os.path.join(config['training']['save_dir'], f'epoch_{epoch}.pt'))
-                print(f"[Checkpoint] Model saved at epoch {epoch}.")
-        print("\n[Training] Training complete!")
-    
-    # Create model
-    print("\n[Model] Building BELT-Enhanced model...")
-    model = BELTEnhancedModel(config).to(device)
-    
-    # Count parameters
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[Model] Trainable parameters: {num_params:,}")
-    
-    # Optimizer (AdamW)
-    print("\n[Training] Setting up optimizer and scheduler...")
-    optimizer_cfg = config['training']['optimizer']
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(optimizer_cfg['lr']),
-        weight_decay=float(optimizer_cfg['weight_decay']),
-        betas=tuple(float(b) for b in optimizer_cfg['betas']),
-        eps=float(optimizer_cfg['eps'])
-    )
-    
-    # Scheduler (Warmup + Cosine)
-    scheduler_cfg = config['training']['scheduler']
-    scheduler = WarmupCosineSchedule(
-        optimizer=optimizer,
-        warmup_epochs=scheduler_cfg['warmup_epochs'],
-        total_epochs=config['training']['num_epochs'],
-        min_lr=float(scheduler_cfg['min_lr'])
-    )
-    
-    # Loss functions
-    loss_cfg = config['training']['loss']
-    
-    # Classification loss (with label smoothing)
-    if loss_cfg.get('use_label_smoothing', False):
-        criterion_ce = LabelSmoothingCrossEntropy(
-            epsilon=loss_cfg['label_smoothing']
+    if args.mode == "train":
+        train_model(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion_dict=criterion_dict,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            config=config,
+            device=device,
+            start_epoch=start_epoch,
+            best_val_acc=best_val_acc,
         )
-        print(f"[Loss] Using Label Smoothing (eps={loss_cfg['label_smoothing']})")
-    elif loss_cfg.get('use_focal_loss', False):
-        criterion_ce = FocalLoss(
-            alpha=loss_cfg['focal_alpha'],
-            gamma=loss_cfg['focal_gamma']
-        )
-        print(f"[Loss] Using Focal Loss (alpha={loss_cfg['focal_alpha']}, gamma={loss_cfg['focal_gamma']})")
     else:
-        criterion_ce = nn.CrossEntropyLoss()
-        print("[Loss] Using standard Cross Entropy")
-    
-    # Contrastive loss (only initialize BART if alpha > 0)
-    alpha_val = float(loss_cfg['alpha'])
-    if alpha_val > 0:
-        criterion_cl = ContrastiveLoss(temperature=float(loss_cfg['temperature']))
-        print(f"[Loss] Contrastive loss enabled (alpha={alpha_val})")
-    else:
-        criterion_cl = None
-        print("[Loss] Contrastive loss DISABLED (alpha=0.0) — proven to block CE learning")
-    
-    # VQ loss
-    criterion_vq = None  # VQ loss is returned directly from model forward pass, not needed as a criterion
-    
-    criterion_dict = {
-        'ce': criterion_ce,
-        'cl': criterion_cl,
-        'vq': criterion_vq
-    }
-    
-    # Print configuration summary
-    print("\n" + "="*80)
-    print("BELT-ENHANCED CONFIGURATION SUMMARY")
-    print("="*80)
-    print(f"Model: {config['model']['name']}")
-    print(f"Optimizer: {optimizer_cfg['name'].upper()}")
-    print(f"Learning Rate: {optimizer_cfg['lr']}")
-    print(f"Scheduler: {scheduler_cfg['name']}")
-    print(f"Warmup Epochs: {scheduler_cfg['warmup_epochs']}")
-    print(f"Gradient Clipping: {config['training']['gradient_clipping']['enabled']}")
-    print(f"MixUp: {config['data'].get('use_mixup', False)}")
-    print(f"DropPath: {config['model']['encoder'].get('use_drop_path', False)}")
-    print(f"Multi-Sample Dropout: {config['model']['classifier'].get('use_multi_sample_dropout', False)}")
-    print("="*80)
-    
-    # Create save directories
-    os.makedirs(config['training']['save_dir'], exist_ok=True)
-    os.makedirs(config['training']['log_dir'], exist_ok=True)
-    
-    # Training loop
-    if args.mode == 'train':
-        print("\n[Training] Starting training...")
-        
-        best_val_acc = 0.0
-        
-        for epoch in range(1, config['training']['num_epochs'] + 1):
-            print(f"\n{'='*80}")
-            print(f"EPOCH {epoch}/{config['training']['num_epochs']}")
-            print(f"{'='*80}")
-            
-            # Train
-            train_loss = train_epoch(
-                model, train_loader, optimizer, scheduler,
-                criterion_dict, device, config, epoch
-            )
-
-            # Validate
-            val_loss, val_results = evaluate(
-                model, val_loader, criterion_dict, device, config
-            )
-
-            # Print results
-            print(f"\nEpoch {epoch} Results:")
-            print(f"  Train Loss: {train_loss:.4f}")
-            print(f"  Val Loss: {val_loss:.4f}")
-            print(f"  Val Top-1:  {val_results['top1_acc']*100:.2f}%")
-            print(f"  Val Top-3:  {val_results['top3_acc']*100:.2f}%")
-            print(f"  Val Top-5:  {val_results['top5_acc']*100:.2f}%")
-            print(f"  Val Top-10: {val_results['top10_acc']*100:.2f}%")
-
-            # Log GPU memory usage after each epoch
-            if device.type == 'cuda':
-                print(f"[CUDA][Epoch {epoch}] Allocated memory: {torch.cuda.memory_allocated(device) / 1024 ** 3:.2f} GB")
-                print(f"[CUDA][Epoch {epoch}] Reserved memory: {torch.cuda.memory_reserved(device) / 1024 ** 3:.2f} GB")
-            
-            # Save checkpoint
-            if epoch % config['training']['save_every'] == 0:
-                checkpoint_path = os.path.join(
-                    config['training']['save_dir'],
-                    f'checkpoint_epoch_{epoch}.pt'
-                )
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'val_results': val_results
-                }, checkpoint_path)
-                print(f"\n[Save] Checkpoint saved to: {checkpoint_path}")
-            
-            # Save best model
-            if config['training']['save_best'] and val_results['top10_acc'] > best_val_acc:
-                best_val_acc = val_results['top10_acc']
-                best_path = os.path.join(
-                    config['training']['save_dir'],
-                    'best_model.pt'
-                )
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'val_results': val_results
-                }, best_path)
-                print(f"[Save] Best model saved (Top-10: {best_val_acc*100:.2f}%)")
-        
-        # Final test evaluation
-        print("\n" + "="*80)
-        print("FINAL TEST EVALUATION")
-        print("="*80)
-        
-        # Load best model
-        best_checkpoint = torch.load(best_path)
-        model.load_state_dict(best_checkpoint['model_state_dict'])
-        
-        test_loss, test_results = evaluate(
-            model, test_loader, criterion_dict, device, config
+        checkpoint = args.checkpoint or str(Path(config["training"]["save_dir"]) / "best_model.pt")
+        eval_model(
+            model=model,
+            criterion_dict=criterion_dict,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            config=config,
+            device=device,
+            checkpoint_path=checkpoint,
         )
-        
-        print(f"\nTest Results:")
-        print(f"  Test Loss: {test_loss:.4f}")
-        print(f"  Test Top-1:  {test_results['top1_acc']*100:.2f}%")
-        print(f"  Test Top-3:  {test_results['top3_acc']*100:.2f}%")
-        print(f"  Test Top-5:  {test_results['top5_acc']*100:.2f}%")
-        print(f"  Test Top-10: {test_results['top10_acc']*100:.2f}%")
-        
-        print("\n[Training] Training complete!")
 
 
 if __name__ == "__main__":
     main()
-

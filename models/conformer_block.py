@@ -73,6 +73,8 @@ class ConformerBlock(nn.Module):
         
         # Final Layer Normalization
         self.layer_norm = nn.LayerNorm(d_model)
+        # Default no-op; enhanced pipeline may overwrite this with scheduled DropPath.
+        self.drop_path = nn.Identity()
         
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
@@ -89,11 +91,11 @@ class ConformerBlock(nn.Module):
             x = x.unsqueeze(1)  # (batch, 1, d_model)
             squeeze = True
         
-        # Conformer block
-        x = x + 0.5 * self.ffn1(x)  # Half-step FFN
-        x = x + self.attention(x, mask)
-        x = x + self.conv(x)
-        x = x + 0.5 * self.ffn2(x)  # Half-step FFN
+        # Conformer block with optional DropPath on each residual branch.
+        x = x + self.drop_path(0.5 * self.ffn1(x))  # Half-step FFN
+        x = x + self.drop_path(self.attention(x, mask))
+        x = x + self.drop_path(self.conv(x))
+        x = x + self.drop_path(0.5 * self.ffn2(x))  # Half-step FFN
         x = self.layer_norm(x)
         
         if squeeze:

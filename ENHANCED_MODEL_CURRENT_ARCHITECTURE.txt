@@ -1,0 +1,95 @@
+PROJECT NOTE 2
+Enhanced Model (Current Codebase State)
+Date: February 25, 2026
+
+1) What this enhanced model currently is
+- Main script: experiments/model_enhanced.py
+- Config: config/enhanced_config.yaml
+- Shared modules: models/* and training/*
+- Key comparison artifact: results/analysis/alpha0_vs_enhanced_summary.json
+
+2) Exact architecture and training path in current code
+Model class:
+- BELTEnhancedModel in experiments/model_enhanced.py
+
+Architecture:
+- Encoder: DConformer (840 dim, 6 layers, 8 heads)
+- Vector Quantizer: codebook_size=1024, codebook_dim=840, beta=0.25
+- Classifier: MLP [840 -> 512 -> 256 -> 500], dropout layers at p=0.5
+- Optional wrapper: MultiSampleDropoutClassifier (enabled by config)
+
+Training loop (train_epoch):
+- Optional MixUp on EEG batch
+- Forward uses model(..., return_vq_loss=True, use_vq=True)
+- Loss used: loss_ce + alpha * loss_cl + lambda_vq * vq_loss
+- Warm-start logic: lambda_vq=0 for first 3 epochs, then config value
+
+Optimizer/schedule:
+- AdamW
+- WarmupCosineSchedule
+- Gradient clipping enabled
+- Label smoothing enabled by config
+
+3) Verified current enhanced results
+Source: results/analysis/alpha0_vs_enhanced_summary.json
+- Enhanced (alpha=0.9) test top10: 29.07%
+- Alpha=0.0 ablation test top10: 29.23%
+- Delta (alpha0 - alpha0.9): +0.137 top10 points (3-seed mean)
+- Both enhanced variants remain in same performance band as replica (~29.x top10)
+
+4) Critical behavior currently observed
+From: results/analysis/alpha0_vs_enhanced_summary.json and confusion summaries
+- top1_predicted_classes_enhanced = 1
+- top1_predicted_classes_alpha0 = 1
+- dominant_predicted_word = "the"
+
+Interpretation:
+- Top-1 has collapsed to one class in inspected runs.
+- Top-5/Top-10 still show ranking signal, but winner-class behavior is unhealthy.
+
+5) Why enhancement is not improving (code-level reasons)
+Reason 1: class-collapse dominates outcome
+- If model predicts one dominant class for top1, optimizer/scheduler tricks alone will not recover meaningful gains.
+
+Reason 2: some "enhancements" are not effectively applied as intended
+- DropPath module is attached to each Conformer block as layer.drop_path,
+  but ConformerBlock.forward() does not consume that attribute.
+- So stochastic depth is configured but not actually used in forward computation.
+
+Reason 3: config/code mismatch around language embedding setup
+- enhanced_config.yaml declares facebook/bart-large (embedding_dim=1024),
+  but active ContrastiveLoss call uses defaults from training/losses.py unless explicitly overridden.
+- load_bart_embeddings() exists but is not used in the training flow.
+
+Reason 4: model_enhanced.py has duplicated setup/training blocks
+- There are two separate "if args.mode == 'train'" blocks.
+- This increases maintenance risk and makes experiment state harder to audit.
+
+Reason 5: second training section references undefined test_loader
+- Final test evaluation calls evaluate(..., test_loader, ...), but test_loader is not created in the script path.
+- This prevents a clean, reliable end-to-end enhanced evaluation path from this script alone.
+
+6) What should be done next (enhanced side)
+Priority A: refactor model_enhanced.py into one single training/eval pipeline
+- Remove duplicate blocks, define one clear train/val/test flow.
+- Add explicit test DataLoader creation.
+- Why: removes ambiguity and runtime failures in final evaluation.
+
+Priority B: make each enhancement truly active and verifiable
+- Integrate DropPath inside ConformerBlock forward residual paths.
+- Log per-feature "active/inactive" status at runtime.
+- Why: currently claimed enhancements are not all functionally applied.
+
+Priority C: fix collapse first, then tune
+- Add per-class metrics and confusion checks every epoch.
+- Try class-balanced CE / focal loss / sampler balancing.
+- Why: top1 collapse is the main blocker; tuning AdamW/LR alone is secondary.
+
+Priority D: run strict ablations after cleanup
+- 1) replica clean baseline
+- 2) +enhancement one at a time
+- 3) +combined enhanced stack
+- Why: you need professor-safe evidence of contribution per component.
+
+7) Professor-safe one-line conclusion
+"In the current codebase, enhanced training tricks did not yield measurable test gains over the replica because the model remains in a collapsed prediction regime and some enhancement mechanisms are either mismatched or not fully active in the implemented forward path."
