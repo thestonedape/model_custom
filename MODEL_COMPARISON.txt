@@ -1,217 +1,95 @@
 ================================================================================
-REPLICA vs ENHANCED MODEL — DETAILED COMPARISON
+REPLICA vs ENHANCED - CURRENT TEST COMPARISON
 ================================================================================
 Date: February 25, 2026
-Task: EEG-to-word classification, 500-class vocabulary
-Dataset: ZuCo (Task 1-SR, Gaze Data)
-  Train: 122,391 samples | Val: 14,882 | Test: 15,159
-  Split: sentence-level 80/10/10 (fair comparison with BELT paper)
+Task: EEG-to-word classification (500-class vocabulary)
+Dataset: ZuCo Task 1-SR (sentence-level split 80/10/10)
+
+Verified artifact sources:
+- results/main_results/final_results.json
+- results/enhanced_checkpoints/best_model.pt
+- results/analysis/alpha0_run_8ep/checkpoints/best_model.pt
+- results/analysis/alpha0_vs_enhanced_summary.json
+- results/analysis/enhanced_best_confusion_summary.txt
+- results/analysis/alpha0_run_8ep/alpha0_best_confusion_summary.txt
 
 ================================================================================
-SECTION 1 — ARCHITECTURE COMPARISON
+SECTION 1 - MODELS COMPARED
 ================================================================================
 
-Component              | REPLICA (Model 1)         | ENHANCED (Model 2)
------------------------|---------------------------|---------------------------
-Encoder                | D-Conformer               | D-Conformer (same)
-  Blocks               | 6                         | 6
-  d_model              | 840                       | 840
-  Attention heads      | 8                         | 8
-  FF expansion         | 4                         | 4
-  Conv kernel          | 31                        | 31
-  Base dropout         | 0.1                       | 0.1
-  DropPath (NEW)       | No                        | Yes (rate=0.1, linear)
-VQ Codebook            | K=1024, d=840, beta=0.25  | Same (bypassed in current run)
-Classifier head        | MLP [512, 256, 500]       | MLP [512, 256, 500]
-  Multi-sample DO(NEW) | No                        | Yes (5 samples)
-Total parameters       | 112,821,180               | 112,821,180
+Replica (baseline):
+- SGD-style BELT replica result from results/main_results/final_results.json
+
+Enhanced (alpha=0.9):
+- best checkpoint: results/enhanced_checkpoints/best_model.pt
+- includes AdamW, warmup+cosine, label smoothing, MixUp, DropPath,
+  multi-sample dropout, VQ warm start, contrastive alpha=0.9
+
+Enhanced alpha=0.0 ablation:
+- checkpoint from this session: results/analysis/alpha0_run_8ep/checkpoints/best_model.pt
+- best checkpoint epoch: 7 (from 8-epoch run path)
+- same enhanced stack except contrastive weight forced to alpha=0.0
 
 ================================================================================
-SECTION 2 — TRAINING CONFIGURATION COMPARISON
+SECTION 2 - TEST RESULTS (HEAD-TO-HEAD)
 ================================================================================
 
-Setting                | REPLICA                   | ENHANCED
------------------------|---------------------------|---------------------------
-Optimizer              | SGD                       | AdamW
-  Learning rate        | 1e-4 (fixed start)        | 5e-4 (peak after warmup)
-  Momentum             | 0.9                       | —
-  Weight decay         | —                         | 0.01
-  Betas                | —                         | (0.9, 0.999)
-LR Schedule            | CosineAnnealingLR         | Warmup(5ep) + CosineAnnealing
-  Warmup               | None                      | 5 epochs, linear 1e-4→5e-4
-  Min LR               | (default ~0)              | 1e-7
-Gradient clipping      | None                      | max_norm=1.0
-Label smoothing        | None (hard CE)            | epsilon=0.1
-MixUp augmentation     | None                      | alpha=0.2, prob=1.0
-Contrastive loss       | DISABLED (alpha=0.0)      | DISABLED (alpha=0.0)
-VQ loss                | ACTIVE (lambda=1.0)       | DISABLED / BYPASSED
-Batch size             | 64                        | 64
-Epochs                 | 60                        | 60 (in progress)
+Replica test metrics (from final_results.json):
+- Top-1:  7.38%
+- Top-5:  20.61%
+- Top-10: 29.41%
+
+Single-pass test metrics with seed=42 (same evaluation routine for both enhanced variants):
+
+Metric    | Replica | Enhanced (a=0.9) | Enhanced (a=0.0)
+----------|---------|-------------------|------------------
+Top-1     | 7.38%   | 7.38%             | 7.38%
+Top-5     | 20.61%  | 20.53%            | 20.39%
+Top-10    | 29.41%  | 29.07%            | 29.23%
+Loss      | n/a     | 5.5116            | 5.5137
+
+Note:
+- Enhanced uses multi-sample dropout in evaluation, which is stochastic.
+- 3-seed quick check (from summary JSON):
+  - Enhanced (a=0.9) Top-10 mean/std: 29.131 +/- 0.0748
+  - Enhanced (a=0.0) Top-10 mean/std: 29.268 +/- 0.0276
+  - Delta (a=0.0 - a=0.9): +0.137 Top-10 points (small)
 
 ================================================================================
-SECTION 3 — FINAL TEST RESULTS (REPLICA — COMPLETED)
+SECTION 3 - FACTUAL INTERPRETATION
 ================================================================================
 
-Metric         | Replica    | BELT Paper (ref) | Delta vs Paper
----------------|------------|------------------|---------------
-Top-1 Acc      | 7.38%      | ~6.00%           | +1.38%
-Top-5 Acc      | 20.61%     | 20.00%           | +0.61%
-Top-10 Acc     | 29.41%     | 31.04%           | -1.63%  (within 5%)
-Test Loss      | 6.5067     | —                | —
-CE Loss        | 5.4544     | —                | —
-VQ Loss        | 1.0523     | —                | —
+1) No practical gain over Replica on test was observed.
+   - All compared results remain in the same 29.1 to 29.4 Top-10 band.
 
-Best Val Top-10: 29.86% (epoch 4)
-Convergence:     Epoch 4 — completely flat through epoch 60
+2) Turning contrastive off (alpha=0.0) did not produce a meaningful jump.
+   - alpha=0.0 slightly improves Top-10 vs alpha=0.9 in this run set,
+     but only by a small margin.
 
-NOTE: Replica achieves 29.41% WITHOUT contrastive loss.
-Paper achieves 31.04% WITH contrastive loss.
-Gap of only 1.63% suggests contrastive loss provides marginal benefit at best,
-and in our setup was proven to actively block CE learning (see ablation).
+3) Current evidence supports "performance saturation for this setup"
+   more than "regularization/optimizer deficiency".
+   - Strong recipe changes did not materially change test outcome.
 
 ================================================================================
-SECTION 4 — ENHANCED MODEL TRAINING HISTORY (ALL RUNS)
+SECTION 4 - CONFUSION/PER-CLASS DIAGNOSTIC RESULT
 ================================================================================
 
---- RUN 1: VQ active, lambda_vq=0.0 (frozen random codebook) ---
-Duration: 13 epochs, stopped manually
-Root problem: VQ codebook had zero gradient → acted as fixed random hash
-Smoking gun: Val Top-1 frozen at EXACTLY 6.94% every single epoch
+From generated confusion/per-class reports:
+- Both enhanced checkpoints produced only one Top-1 predicted class in inspected runs.
+- Dominant class index 0 maps to the word "the".
+- This explains Top-1 ~= frequency("the") on test (about 7.38%).
 
-  Epoch | Train Loss | Top-1  | Top-3  | Top-5  | Top-10 | Best?
-  ------|-----------|--------|--------|--------|--------|------
-    1   |  5.7681   |  6.94% |   —    |   —    | 29.73% |  ✓
-    2   |  5.5398   |  6.94% |   —    |   —    | 29.95% |  ✓  ← peak
-    3   |  5.5346   |  6.94% |   —    |   —    | 29.84% |
-    4   |  5.5336   |  6.94% |   —    |   —    | 29.80% |
-    5   |  5.5264   |  6.94% |   —    |   —    | 29.90% |  (warmup ended)
-    6   |  5.5234   |  6.94% |   —    |   —    | 29.74% |
-    7   |  5.5219   |  6.94% |   —    |   —    | 29.88% |
-    8   |  5.5216   |  6.94% |   —    |   —    | 29.83% |
-    9   |  5.5179   |  6.94% |   —    |   —    | 29.84% |
-   10   |  5.5165   |  6.94% |   —    |   —    | 29.85% |
-   11   |  5.5161   |  6.94% |   —    |   —    | 29.89% |
-   12   |  5.5162   |  6.94% |   —    |   —    | 29.83% |
-   13   |  5.5158   |  6.94% |   —    |   —    | 29.90% |  stopped
-
-  Train loss delta over 12 epochs: 0.024 (effectively zero improvement)
-  Val Top-10 spread: 29.73% – 29.95% (0.22% — noise, not learning)
-
---- RUN 2: VQ bypassed, use_vq=False (CURRENT, IN PROGRESS) ---
-Fix applied: encoder output routes directly to classifier, VQ layer skipped entirely
-Clean gradient flow — no random discretization bottleneck
-
-  Epoch | Train Loss | Top-1  | Top-3  | Top-5  | Top-10 | Best?
-  ------|-----------|--------|--------|--------|--------|------
-    1   |  5.6174   |  6.94% | 14.45% | 20.36% | 29.69% |  ✓
-    2+  |  [LIVE — see results/enhanced_training_log.txt]
+Implication:
+- Ranking metrics (Top-5/Top-10) still carry signal,
+  but Top-1 behavior is effectively collapsed.
 
 ================================================================================
-SECTION 5 — KEY DIFFERENCES EXPLAINED
+SECTION 5 - REPORTING RECOMMENDATION
 ================================================================================
 
-1. WHY REPLICA WORKED BUT ENHANCED PLATEAU'D INITIALLY
-   ─────────────────────────────────────────────────────
-   Replica:   VQ loss active (lambda=1.0) → codebook trains alongside encoder
-              Encoder outputs and codebook vectors co-adapt from random init
-              VQ serves as a meaningful learned intermediate representation
+Professor-safe summary sentence:
+"On this ZuCo 500-class setup, enhanced training tricks and an alpha=0 contrastive
+ablation did not produce a meaningful test improvement over the replica baseline;
+all runs remained near the same Top-10 range."
 
-   Enhanced:  VQ loss disabled (lambda=0.0) to prevent divergence (see below)
-              BUT model still routed through VQ layer → frozen random codebook
-              Every encoder output snapped to same random bucket every step
-              Classifier learned fixed random_bucket → word mapping
-              Encoder had zero incentive to change (VQ buckets never moved)
-
-2. WHY VQ LOSS DIVERGED IN ENHANCED (lambda=1.0 attempt)
-   ───────────────────────────────────────────────────────
-   VQ loss = MSE(encoder_output, nearest_codebook_vector)
-   At init: encoder outputs ~N(0,1), codebook ~N(0, small)
-   As CE loss trains encoder, output magnitudes grow (4–16 range)
-   Codebook never catches up → MSE explodes (0.4 → 240+ over 100 batches)
-   With lambda=1.0: total_loss = CE(~6) + 1.0 * VQ(240+)
-   Gradient clipping suppresses everything → model cannot learn CE
-
-   Root cause: VQ codebook needs to be initialized in the same scale as the
-   encoder outputs, or needs a warm-up period before being active.
-   Replica avoided this because its encoder was pre-at a good scale from SGD.
-
-3. OPTIMIZER DIFFERENCE: SGD vs AdamW
-   ─────────────────────────────────────
-   SGD (replica): Simple, stable, well-understood for this type of model
-                  lr=1e-4 conservative → slow but steady convergence
-   AdamW (enhanced): Adaptive per-parameter LR, faster initial convergence
-                     But with lr=5e-4 may overshoot on this small signal EEG task
-                     Weight decay decoupled (better generalization theory)
-
-4. CONTRASTIVE LOSS: DISABLED IN BOTH
-   ─────────────────────────────────────
-   Ablation study in replica showed alpha=0.1-0.9 ALL blocked CE learning
-   Both models use alpha=0.0 (contrastive loss completely disabled)
-   See ANALYSIS_RESULTS section in ENHANCED_MODEL_ANALYSIS.txt for full ablation
-
-================================================================================
-SECTION 6 — PERFORMANCE SUMMARY TABLE
-================================================================================
-
-                       | Random  | Replica | Enhanced   | BELT Paper
-                       | Chance  | (final) | (best so far)| (reported)
------------------------|---------|---------|------------|------------
-Top-1                  |  0.20%  |  7.38%  | 6.94%*     | ~6.00%
-Top-5                  |  1.00%  | 20.61%  | 20.36%*    | ~20.00%
-Top-10                 |  2.00%  | 29.41%  | 29.69%*    | 31.04%
-Best Val Top-10        |   —     | 29.86%  | 29.95%*    | —
-Epochs to converge     |   —     |    4    | TBD        | ~10 (est.)
-Training time          |   —     | ~5 hrs  | ~5 hrs     | —
-
-* Enhanced results marked with asterisk = epoch 1 only, training ONGOING
-  Enhanced model expected to improve significantly over 60 epochs with
-  AdamW + label smoothing + MixUp + DropPath + clean gradient flow (VQ bypass)
-
-================================================================================
-SECTION 7 — WHAT TO EXPECT GOING FORWARD
-================================================================================
-
-If VQ bypass is the correct fix (expected trajectory):
-  Epoch 5:   ~30–31%  (warmup complete, AdamW finding good direction)
-  Epoch 10:  ~31–33%  (cosine LR enabling fine-tuning)
-  Epoch 20:  ~33–35%  (main improvement window)
-  Epoch 40:  ~35–37%  (convergence approaching)
-  Epoch 60:  ~36–38%  (final — beating paper's 31.04% by ~5-7%)
-
-Key metric to watch: if Top-1 varies and trends upward epoch-to-epoch
-(unlike plateau run where it was frozen at 6.94%), the model is learning.
-
-If plateau recurs past epoch 10 (Val Top-10 still ~29-30%):
-  Option A: Restart with lower LR (lr=1e-4, matching replica)
-  Option B: Keep replica as final result — 29.41% is competitive
-  Option C: Add VQ warm-start (CE-only for 10ep, then re-enable VQ at lambda=0.01)
-
-================================================================================
-SECTION 8 — CONCLUSION (CURRENT STATE)
-================================================================================
-
-REPLICA:   COMPLETE ✓
-  Final test Top-10: 29.41% — within 1.63% of paper's 31.04%
-  Validates our reproduction with a meaningful result
-
-ENHANCED:  IN PROGRESS ⚙
-  Run 1 (frozen VQ):  peaked at 29.95% val, clear bottleneck bug identified
-  Run 2 (VQ bypass):  epoch 1 complete (29.69%), continuing...
-  Architecture improvements are sound — AdamW, label smoothing, MixUp,
-  DropPath, gradient clipping are all established improvements from literature
-  VQ bypass removes the identified bottleneck — results expected by epoch 10+
-
-PAPER COMPARISON:
-  Our replica (29.41%) is already competitive despite no contrastive loss
-  Enhanced target (36-38%) would exceed the paper's 31.04% by ~5-7%
-  This would represent a meaningful research contribution
-
-================================================================================
-Files:
-  Replica checkpoints:    results/main_results/
-  Replica final JSON:     results/main_results/final_results.json
-  Enhanced checkpoints:   results/enhanced_checkpoints/
-  Enhanced live log:      results/enhanced_training_log.txt
-  Full bug log:           ENHANCED_MODEL_ANALYSIS.txt
-  This file:              MODEL_COMPARISON.txt
 ================================================================================

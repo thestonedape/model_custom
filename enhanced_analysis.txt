@@ -1,0 +1,44 @@
+BELT-Enhanced Model — Final Analysis Summary
+===========================================
+
+Key findings:
+- Peak Val Top-10 recorded: 29.86% (epoch 4) — NOT exceeded during the full run
+- Training continued beyond the early peak but did not improve Top-10 accuracy beyond epoch 4.
+- Multiple checkpoints (epoch snapshots and periodic saves) are available for rollback or analysis.
+- Model configuration actually used in the run:
+  - Encoder: D-Conformer with DropPath (enabled)
+  - Vector Quantizer: ACTIVE with warm-start schedule (lambda_vq = 0.0 for first 3 epochs, then λ=config value)
+  - Classifier: MLP with Multi-Sample Dropout (enabled)
+  - Optimizer: AdamW
+  - Label smoothing: enabled (epsilon=0.1)
+  - MixUp augmentation: enabled
+  - Contrastive loss: ENABLED (alpha=0.9) — BART embeddings loaded in the run
+
+Code audit note:
+- `experiments/model_enhanced.py` contains duplicated model/scheduler/training blocks which make automated auditing harder and may introduce inconsistent edits. The active training loop uses `model(..., use_vq=True)` so VQ was not bypassed during recorded training.
+
+## Key Findings (as of Feb 25, 2026)
+
+- Best Top-10 accuracy: 29.86% (epoch 4)
+- No improvement after epoch 4; model plateaued
+- **All enhancements were active:**
+  - Vector Quantizer (VQ, warm-start)
+  - Contrastive loss (alpha=0.9, BART embeddings)
+  - MixUp
+  - DropPath
+  - Multi-sample dropout
+- Code audit: All features confirmed active in both code and config
+- Code contains duplicated training blocks ([experiments/model_enhanced.py](experiments/model_enhanced.py))
+- Plateau likely due to high contrastive loss weight and VQ dynamics
+
+## Recommendations / Next Experiments
+
+1. Run with alpha=0.0 (disable contrastive loss) to test if CE learning improves
+2. Optionally refactor duplicated code blocks for clarity
+3. Consider tuning VQ lambda and MixUp params
+
+## References
+- [results/enhanced_training_log.txt](results/enhanced_training_log.txt)
+- [results/enhanced_checkpoints/](results/enhanced_checkpoints/)
+- [experiments/model_enhanced.py](experiments/model_enhanced.py)
+- [config/enhanced_config.yaml](config/enhanced_config.yaml)

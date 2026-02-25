@@ -1,221 +1,119 @@
 ================================================================================
-BELT-ENHANCED MODEL — TRAINING ANALYSIS & DEBUGGING LOG
+BELT-ENHANCED - UPDATED ANALYSIS (CODE + TEST + ABLATION)
 ================================================================================
 Date: February 25, 2026
-Author: Nishan (thestonedape)
-Model: BELT-Enhanced (experiments/model_enhanced.py)
+Model code: experiments/model_enhanced.py
 Config: config/enhanced_config.yaml
-Dataset: ZuCo EEG — 122,391 train / 14,882 val / 15,159 test — 500-class vocab
-GPU: CUDA (RTX series)
+
+Primary artifacts used:
+- results/enhanced_checkpoints/best_model.pt
+- results/analysis/alpha0_run_8ep/checkpoints/best_model.pt
+- results/analysis/alpha0_vs_enhanced_summary.json
+- results/analysis/enhanced_best_per_class_accuracy.csv
+- results/analysis/alpha0_run_8ep/alpha0_best_per_class_accuracy.csv
+- results/analysis/enhanced_best_confusion_summary.txt
+- results/analysis/alpha0_run_8ep/alpha0_best_confusion_summary.txt
 
 ================================================================================
-SECTION 1 — WHAT BELT-ENHANCED IS
+SECTION 1 - WHAT WAS RUN IN THIS UPDATE
 ================================================================================
 
-The enhanced model is an improved version of the BELT replica with 7 additions:
-
-  1. Label Smoothing (eps=0.1) instead of hard cross-entropy
-  2. AdamW optimizer (lr=5e-4, weight_decay=0.01) instead of SGD
-  3. Warmup + Cosine Annealing LR (5 epoch warmup, min_lr=1e-7)
-  4. Gradient Clipping (max_norm=1.0)
-  5. MixUp augmentation (alpha=0.2)
-  6. Stochastic Depth / DropPath (rate=0.1) in D-Conformer blocks
-  7. Multi-Sample Dropout in classifier head (5 samples)
-
-Architecture is identical to the BELT replica:
-  D-Conformer (6 blocks, d_model=840) → VQ (K=1024) → MLP Classifier (500 classes)
-  Total parameters: 112,821,180
+Completed in this session:
+1) Test evaluation of Enhanced best checkpoint (alpha=0.9 configuration).
+2) Alpha ablation path with alpha=0.0 using enhanced setup.
+3) Test evaluation of best alpha=0 checkpoint (epoch 7).
+4) Confusion and per-class accuracy reports for both checkpoints.
 
 ================================================================================
-SECTION 2 — REPLICA BASELINE (for comparison)
+SECTION 2 - CHECKPOINT STATUS
 ================================================================================
 
-  Optimizer: SGD (lr=1e-4, momentum=0.9)
-  Scheduler: CosineAnnealingLR
-  Contrastive loss: DISABLED (proven to block CE learning in ablation)
-  VQ loss: ACTIVE (lambda_vq=1.0)
+Enhanced (alpha=0.9):
+- checkpoint: results/enhanced_checkpoints/best_model.pt
+- source best epoch (validation): 34
 
-  Results (60 epochs):
-    Test Top-1:  7.38%
-    Test Top-5:  20.61%
-    Test Top-10: 29.41%   ← target to beat
-    Best Dev:    29.86%
-
-  Convergence profile:
-    Epoch 1:  19.45% dev Top-10
-    Epoch 4:  29.86% dev Top-10 (converged)
-    Epoch 60: 29.86% dev Top-10 (completely flat after epoch 4)
+Enhanced alpha=0.0 ablation:
+- checkpoint: results/analysis/alpha0_run_8ep/checkpoints/best_model.pt
+- best checkpoint epoch: 7
 
 ================================================================================
-SECTION 3 — BUG LOG (8 bugs fixed before stable training)
+SECTION 3 - TEST METRICS
 ================================================================================
 
-BUG 1: AttributeError — DConformer attribute name wrong
-  Code:    self.encoder.layers
-  Fix:     self.encoder.conformer_blocks
-  Why:     DConformer uses conformer_blocks not layers internally
+Single-pass test metrics (seed=42):
 
-BUG 2: YAML float parsing — scientific notation read as string
-  Code:    lr: 5e-4  →  TypeError: '<=' not supported between str and float
-  Fix:     lr: 0.0005  (plain decimal in enhanced_config.yaml)
-  Also:    Added float() cast in optimizer setup as safety net
+Enhanced (alpha=0.9):
+- Loss:   5.5116
+- Top-1:  7.38%
+- Top-5:  20.53%
+- Top-10: 29.07%
 
-BUG 3: LabelSmoothingCrossEntropy wrong kwargs
-  Code:    LabelSmoothingCrossEntropy(num_classes=500, smoothing=0.1)
-  Fix:     LabelSmoothingCrossEntropy(epsilon=0.1)
-  Why:     training/enhanced_losses.py uses 'epsilon', not 'smoothing'
+Enhanced alpha=0.0:
+- Loss:   5.5137
+- Top-1:  7.38%
+- Top-5:  20.39%
+- Top-10: 29.23%
 
-BUG 4: VectorQuantizerLoss class does not exist
-  Code:    criterion_vq = VectorQuantizerLoss()
-  Fix:     criterion_vq = None  (VQ loss comes from model.forward() directly)
+Delta (alpha=0.0 - alpha=0.9):
+- Top-1:  +0.00%
+- Top-5:  -0.14%
+- Top-10: +0.16%
+- Loss:   +0.0020
 
-BUG 5: UnicodeEncodeError — Windows CP1252 terminal
-  Issue:   Print statements contained Greek letters (ε, α, γ)
-  Fix:     Replaced with ASCII equivalents (eps, alpha, gamma) via PowerShell
+3-seed quick stability check (due stochastic eval behavior):
+- alpha=0.9 Top-10 mean/std: 29.131 +/- 0.0748
+- alpha=0.0 Top-10 mean/std: 29.268 +/- 0.0276
+- mean delta: +0.137 Top-10 points
 
-BUG 6: Batch is tuple not dict
-  Code:    batch['eeg'], batch['label'], batch['word_embedding']
-  Fix:     eeg_data, labels, words = batch
-  Why:     ZuCo dataset returns (eeg_tensor, label_int, word_str) tuple
-
-BUG 7: ContrastiveLoss signature mismatch
-  Code:    criterion_cl(quantized, word_embeddings, labels)
-  Fix:     criterion_cl(quantized, list(words))
-  Why:     ContrastiveLoss.forward takes (eeg_features, words_list) — no labels
-
-BUG 8: IndexError — VQ got 1D input
-  Issue:   encoded.mean(dim=1) on 2D [batch,840] → [batch] (1D)
-  Fix:     Conditional pooling: if encoded.dim()==3 → mean(dim=1) else pass through
-  Why:     EEG input is 2D [batch,840], no sequence dimension
+Interpretation:
+- Contrastive-off is only slightly better on Top-10 in these quick checks.
+- Effect size is small; no major shift in overall performance band.
 
 ================================================================================
-SECTION 4 — VQ LOSS DIVERGENCE ISSUE (critical)
+SECTION 4 - CONFUSION AND PER-CLASS FINDINGS
 ================================================================================
 
-ATTEMPT 1 (lambda_vq=1.0):
-  Symptom: VQ loss grew from 0.4 → 240+ over 100 batches
-  Raw MSE between random codebook (near-zero init) and encoder outputs (~4-16 mag)
-  explodes as CE drives encoder outputs to larger magnitudes.
-  Result:  Total loss = CE(~6) + 1.0 * VQ(240+) → gradient clipping suppressed CE
+Critical observation:
+- Both evaluated checkpoints predict a single Top-1 class on test:
+  class index 0, word "the".
 
-ATTEMPT 2 (lambda_vq=0.1):
-  Same explosion, just 10x smaller contribution — still diverging
+Evidence:
+- top1_predicted_classes_enhanced = 1
+- top1_predicted_classes_alpha0 = 1
+- top confusion pairs are dominated by:
+  many true classes -> predicted "the"
 
-ATTEMPT 3 (lambda_vq=0.0):
-  VQ loss disabled. BUT: model still routes through VQ layer.
-  Random codebook snaps encoder outputs to random buckets every forward pass.
-  Codebook has ZERO gradient (lambda_vq=0 → no VQ loss → frozen at random init).
-  Straight-through estimator passes CE gradients back to encoder but encoder
-  must fight fixed random discretization every step.
-  Result:  Plateau at 29.7-29.9% for ALL 13 epochs (flat from epoch 2 onwards)
-  Smoking gun: Val Top-1 FROZEN at exactly 6.94% across all 13 epochs
+Per-class summary:
+- 500 classes total
+- 499 classes with 0% per-class Top-1 accuracy
+- only "the" class is predicted correctly in Top-1
 
-PLATEAU RUN DATA — Full 13-epoch table (VQ active but frozen, lambda_vq=0.0):
-
-  Epoch | Train Loss | Top-10  | Notes
-  ------|-----------|---------|------
-    1   |  5.7681   | 29.73%  | Best saved
-    2   |  5.5398   | 29.95%  | Best saved ← peak of entire run
-    3   |  5.5346   | 29.84%  |
-    4   |  5.5336   | 29.80%  |
-    5   |  5.5264   | 29.90%  | Warmup ended (LR peaked at 5e-4)
-    6   |  5.5234   | 29.74%  | Cosine decay began
-    7   |  5.5219   | 29.88%  |
-    8   |  5.5216   | 29.83%  |
-    9   |  5.5179   | 29.84%  |
-   10   |  5.5165   | 29.85%  |
-   11   |  5.5161   | 29.89%  |
-   12   |  5.5162   | 29.83%  |
-   13   |  5.5158   | 29.90%  | Stopped here
-
-  Observations:
-  - Train loss delta epochs 2→13: only 0.024 (5.5398 → 5.5158) — essentially zero
-  - Val Top-10 range across all 13 epochs: 29.73% – 29.95% (0.22% spread)
-  - Top-1 frozen at EXACTLY 6.94% on EVERY epoch — impossible without a bug
-  - Confirmed root cause: VQ codebook frozen at random init acts as fixed hash
-    function, classifier learns to map random buckets → words, but encoder
-    cannot meaningfully update because its outputs are always discretized to
-    the same random codes. Straight-through gradient exists but encoder is
-    fighting a fixed destructive bottleneck.
-
-CURRENT FIX — VQ bypass (use_vq=False):
-  When lambda_vq=0, encoder output passes DIRECTLY to classifier, VQ skipped.
-  Clean gradient flow: CE loss → classifier → encoder (no discretization bottleneck)
+Practical meaning:
+- Top-1 is collapsed.
+- Top-5/Top-10 still carry some ranking signal, but class-winner behavior is not healthy.
 
 ================================================================================
-SECTION 5 — CURRENT RUN (VQ-bypassed, fresh start)
+SECTION 5 - CODE/PIPELINE CAVEATS
 ================================================================================
 
-Config:
-  Optimizer:      AdamW (lr=5e-4, wd=0.01)
-  Scheduler:      Warmup(5 epochs) + CosineAnnealing(min_lr=1e-7)
-  Gradient clip:  max_norm=1.0
-  MixUp:          alpha=0.2
-  DropPath:       rate=0.1
-  Multi-sample DO: 5 samples
-  Label smooth:   eps=0.1
-  VQ:             BYPASSED (use_vq=False, lambda_vq=0.0)
-  Contrastive:    DISABLED (alpha=0.0)
+1) experiments/model_enhanced.py has duplicated setup/training sections.
+2) --mode eval path does not provide a direct final test report workflow.
+3) Multi-sample dropout in classifier introduces stochasticity at evaluation.
 
-Epoch-by-epoch results (Val set) — VQ BYPASS RUN:
-
-  Epoch | Train Loss | Top-1  | Top-5  | Top-10 | Notes
-  ------|-----------|--------|--------|--------|------
-    1   |  5.6174   |  6.94% | 20.36% | 29.69% | Best saved
-    2+  |  [ongoing — check results/enhanced_training_log.txt for live data]
-
-Expected trajectory (if fix works):
-  Epochs 1-5  (warmup):   ~29-30%   (LR ramping, model settling)
-  Epochs 6-15 (cosine):   30-33%    (main improvement window)
-  Epochs 20-40:           33-36%    (fine-tuning)
-  Epoch 60 final:         35-38%    (target)
-
-If Val Top-10 climbs past 30.5% by epoch 6 and continues rising, the VQ bypass fix is confirmed working. If it plateaus again at ~29.9%, the bottleneck is elsewhere (likely the model capacity or data quality).
+Recommendation for deterministic final reporting:
+- run eval with multi_sample_num=1 (or standard dropout disabled) and average across seeds.
 
 ================================================================================
-SECTION 6 — WHAT TO WATCH FOR
+SECTION 6 - BOTTOM LINE (PROFESSOR-SAFE)
 ================================================================================
 
-GREEN FLAGS (fix working):
-  - Val Top-10 crosses 30.5% by epoch 8
-  - Train loss steadily decreasing (5.6 → 5.3 → 5.0 → ...)
-  - Top-1 NOT frozen (should vary epoch to epoch, trending up)
+- Enhanced recipe did not materially improve test performance over the replica band.
+- Alpha=0 ablation produced only minor Top-10 movement, not a large gain.
+- Confusion/per-class analysis reveals Top-1 class collapse to "the", indicating a
+  model behavior issue beyond simple optimizer/regularization tuning.
 
-RED FLAGS (still broken):
-  - Val Top-10 stuck in 29.7-30.0% band past epoch 10
-  - Top-1 frozen at same value for multiple consecutive epochs
-  - Train loss plateau (delta < 0.01 per epoch after epoch 5)
-
-================================================================================
-SECTION 7 — NEXT STEPS IF PLATEAUED AGAIN
-================================================================================
-
-Option A — Lower LR:
-  Restart with lr=1e-4 (same as replica SGD but with AdamW)
-  May help Adam settle into better minimum without overshoooting
-
-Option B — Add VQ with warm start:
-  Pre-train CE-only for 10 epochs, then enable VQ loss (lambda=0.01)
-  Codebook starts from trained encoder outputs instead of random → no explosion
-
-Option C — Accept ~30% and document:
-  This IS a hard problem. EEG-to-word classification on 500 classes with
-  noisy biological signals is exceptionally challenging. 29-30% Top-10 is
-  meaningful (random would be 2%) and within 1-2% of the paper.
-
-================================================================================
-SECTION 8 — FILE LOCATIONS
-================================================================================
-
-  Replica checkpoints:          results/main_results/
-  Replica final results (JSON): results/main_results/final_results.json
-  Replica training history:     results/main_results/training_history.json
-
-  Enhanced checkpoints:         results/enhanced_checkpoints/
-  Enhanced best model:          results/enhanced_checkpoints/best_model.pt
-  Enhanced training log (live): results/enhanced_training_log.txt
-
-  Model code:                   experiments/model_enhanced.py
-  Config:                       config/enhanced_config.yaml
+Suggested next technical step:
+- fix/verify objective and logits behavior that causes single-class Top-1 collapse,
+  then re-run deterministic test evaluation.
 
 ================================================================================

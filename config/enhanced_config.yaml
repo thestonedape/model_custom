@@ -94,13 +94,14 @@ training:
     use_focal_loss: false       # Set to true if data is imbalanced
     focal_alpha: 1.0
     focal_gamma: 2.0
-    
-    # Contrastive Loss (disabled — proven to block CE learning in our setup)
-    alpha: 0.0                  # α = 0.0 (contrastive disabled after ablation study)
+        
+    # Contrastive Loss (ENABLED — see BELT paper Table VI)
+    alpha: 0.9                  # α = 0.9 (contrastive enabled)
     temperature: 0.07           # Temperature for contrastive loss
-    
-    # Vector Quantizer Loss
-    lambda_vq: 0.0              # λ = 0.0 (VQ loss disabled — CE-only training matches replica baseline)
+        
+    # Vector Quantizer Loss (ENABLED, with warm start recommended)
+    lambda_vq: 0.05             # λ = 0.05 (VQ loss enabled; use 0.0 for first 3 epochs, then 0.05)
+    # To warm start: train with lambda_vq=0.0 for 3 epochs, then set to 0.05
   
   # Checkpointing
   save_dir: "./results/enhanced_checkpoints"
