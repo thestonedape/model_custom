@@ -8,7 +8,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import BartModel, BartTokenizer
-from typing import Optional
+from typing import Dict, Optional
+
+
+def build_class_balanced_weights(
+    label_counts: Dict[int, int],
+    num_classes: int,
+    beta: float = 0.9999
+) -> torch.Tensor:
+    """
+    Build class-balanced CE weights using the effective number of samples.
+
+    Reference:
+    Cui et al., "Class-Balanced Loss Based on Effective Number of Samples"
+    """
+    weights = torch.zeros(num_classes, dtype=torch.float32)
+
+    for class_idx in range(num_classes):
+        count = int(label_counts.get(class_idx, 0))
+        if count <= 0:
+            continue
+
+        effective_num = 1.0 - (beta ** count)
+        weights[class_idx] = (1.0 - beta) / max(effective_num, 1e-12)
+
+    non_zero = weights > 0
+    if non_zero.any():
+        weights[non_zero] = weights[non_zero] * (non_zero.sum().item() / weights[non_zero].sum().item())
+
+    return weights
 
 
 class ContrastiveLoss(nn.Module):
@@ -163,7 +191,10 @@ class BELTLosses:
         alpha: float = 0.9,
         lambda_vq: float = 1.0,
         use_contrastive: bool = True,
-        contrastive_loss: Optional[ContrastiveLoss] = None
+        contrastive_loss: Optional[ContrastiveLoss] = None,
+        class_weights: Optional[torch.Tensor] = None,
+        ce_weighting: str = "standard",
+        class_balance_beta: Optional[float] = None
     ):
         """
         Args:
@@ -176,9 +207,20 @@ class BELTLosses:
         self.lambda_vq = lambda_vq
         self.use_contrastive = use_contrastive
         self.contrastive_loss = contrastive_loss
-        
-        # Cross-entropy loss
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.class_weights = class_weights
+        self.ce_weighting = ce_weighting
+        self.class_balance_beta = class_balance_beta
+
+    def get_loss_config(self) -> Dict:
+        """Return serializable loss settings for checkpoints/results."""
+        return {
+            'alpha': self.alpha,
+            'lambda_vq': self.lambda_vq,
+            'use_contrastive': self.use_contrastive,
+            'ce_weighting': self.ce_weighting,
+            'class_balance_beta': self.class_balance_beta,
+            'num_weighted_classes': int((self.class_weights > 0).sum().item()) if self.class_weights is not None else 0
+        }
     
     def compute_total_loss(
         self,
@@ -203,7 +245,10 @@ class BELTLosses:
             loss_dict: Dictionary with individual loss values
         """
         # L_ce: Cross-entropy loss
-        l_ce = self.ce_loss(logits, labels)
+        class_weights = None
+        if self.class_weights is not None:
+            class_weights = self.class_weights.to(logits.device)
+        l_ce = F.cross_entropy(logits, labels, weight=class_weights)
         
         # L_vq: Vector quantization loss
         l_vq = vq_loss

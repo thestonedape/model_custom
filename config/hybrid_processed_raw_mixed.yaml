@@ -1,0 +1,59 @@
+# Full hybrid processed+raw EEG word classifier.
+
+data:
+  cache_paths:
+    - "data/cache/hybrid_word_task2_NR.pkl"
+    - "data/cache/hybrid_word_task2_NR_2_0_part1.pkl"
+    - "data/cache/hybrid_word_task2_NR_2_0_part2.pkl"
+    - "data/cache/hybrid_word_task2_NR_2_0_part3.pkl"
+    - "data/cache/hybrid_word_task3_TSR.pkl"
+    - "data/cache/hybrid_word_task3_TSR_2_0_part1.pkl"
+    - "data/cache/hybrid_word_task3_TSR_2_0_part2a.pkl"
+    - "data/cache/hybrid_word_task3_TSR_2_0_part2b.pkl"
+    - "data/cache/hybrid_word_task3_TSR_2_0_part3a.pkl"
+    - "data/cache/hybrid_word_task3_TSR_2_0_part3b.pkl"
+  vocab_path: "data/vocabulary_top500_nr_tsr_mixed.pkl"
+  splits_path: "data/sentence_splits_nr_tsr_mixed.pkl"
+  tasks: ["task2-NR", "task2-NR-2.0", "task3-TSR", "task3-TSR-2.0"]
+  normalize_eeg: true
+  normalize_et: true
+  normalization_eps: 1.0e-5
+
+model:
+  processed_dim: 840
+  eeg_dim: 105
+  et_dim: 4
+  metrics_dim: 5
+  model_dim: 192
+  processed_hidden_dim: 256
+  aux_hidden_dim: 64
+  num_heads: 6
+  num_layers: 3
+  ff_dim: 384
+  dropout: 0.1
+  num_classes: 500
+  norm_first: false
+  patch_kernel_size: 7
+  patch_stride: 4
+
+training:
+  epochs: 20
+  batch_size: 8
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-2
+  grad_clip: 1.0
+
+evaluation:
+  batch_size: 8
+  min_batch_size: 2
+  metrics: ["top1", "top5", "top10"]
+
+logging:
+  log_interval: 10
+
+experiments:
+  save_dir: "results/hybrid_processed_raw_mixed"
+
+hardware:
+  device: "cuda"
+  num_workers: 0

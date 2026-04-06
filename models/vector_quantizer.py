@@ -8,6 +8,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class IdentityQuantizer(nn.Module):
+    """
+    Drop-in replacement for VectorQuantizer used in true no-VQ ablations.
+
+    It preserves the trainer interface but returns the encoder features
+    unchanged and a zero-valued VQ loss.
+    """
+
+    def __init__(self, input_dim: int):
+        super().__init__()
+        self.input_dim = input_dim
+        self.codebook_dim = input_dim
+        self.codebook_size = 0
+        self.beta = 0.0
+
+    def forward(self, x: torch.Tensor):
+        vq_loss = x.new_zeros(())
+        perplexity = x.new_ones(())
+        if x.dim() == 2:
+            encodings = x.new_zeros((x.size(0), 0))
+        else:
+            encodings = x.new_zeros((x.size(0), x.size(1), 0))
+        return vq_loss, x, perplexity, encodings
+
+    def get_codebook_usage(self, x: torch.Tensor) -> torch.Tensor:
+        return x.new_zeros((0,), dtype=torch.long)
+
+
 class VectorQuantizer(nn.Module):
     """
     Vector Quantizer with learnable codebook

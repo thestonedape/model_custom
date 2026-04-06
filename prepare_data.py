@@ -4,8 +4,10 @@ Prepares vocabulary and data splits for BELT training
 Run this BEFORE training models
 """
 
+import argparse
 import sys
 from pathlib import Path
+import yaml
 
 # Add current directory to path (for standalone usage)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -13,20 +15,29 @@ sys.path.insert(0, str(Path(__file__).parent))
 from data import build_zuco_vocabulary, create_splits
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Prepare BELT vocabulary and legacy file-level splits")
+    parser.add_argument("--config", type=str, default="config/belt_config.yaml")
+    return parser.parse_args()
+
+
 def main():
     """Prepare all data for training"""
+    args = parse_args()
+    with open(args.config, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
     
     print("="*80)
     print("BELT DATA PREPARATION")
     print("="*80)
     
-    # Configuration (updated for standalone structure)
-    dataset_root = "dataset/ZuCo"
-    tasks = ["task1-SR", "task2-NR", "task2-NR-2.0", "task3-TSR", "task3-TSR-2.0"]
-    vocab_size = 500
+    dataset_root = config['data']['dataset_path']
+    tasks = list(config['data']['tasks'])
+    vocab_size = int(config['data']['vocabulary_size'])
+    random_seed = int(config['data'].get('random_seed', 42))
     
-    vocab_save_path = "data/vocabulary_top500.pkl"
-    splits_save_path = "data/splits.pkl"
+    vocab_save_path = config['data'].get('vocab_path', "data/vocabulary_top500.pkl")
+    splits_save_path = config['data'].get('legacy_splits_path', "data/splits.pkl")
     
     # Step 1: Build vocabulary
     print("\n" + "="*80)
@@ -35,6 +46,7 @@ def main():
     print(f"Dataset root: {dataset_root}")
     print(f"Tasks: {tasks}")
     print(f"Vocabulary size: {vocab_size}")
+    print(f"Vocabulary path: {vocab_save_path}")
     
     vocab = build_zuco_vocabulary(
         dataset_root=dataset_root,
@@ -43,7 +55,7 @@ def main():
         save_path=vocab_save_path
     )
     
-    print(f"\n✓ Vocabulary created and saved to: {vocab_save_path}")
+    print(f"\n[OK] Vocabulary created and saved to: {vocab_save_path}")
     
     # Print vocabulary statistics
     stats = vocab.get_statistics()
@@ -58,6 +70,7 @@ def main():
     print("STEP 2: CREATING DATA SPLITS")
     print("="*80)
     print("Train: 80% | Dev: 10% | Test: 10%")
+    print(f"Legacy splits path: {splits_save_path}")
     
     splits = create_splits(
         dataset_root=dataset_root,
@@ -65,11 +78,19 @@ def main():
         train_ratio=0.8,
         dev_ratio=0.1,
         test_ratio=0.1,
-        random_seed=42,
+        random_seed=random_seed,
         save_path=splits_save_path
     )
     
-    print(f"\n✓ Splits created and saved to: {splits_save_path}")
+    print(f"\n[OK] Splits created and saved to: {splits_save_path}")
+
+    empty_splits = [name for name in ("train", "dev", "test") if len(splits.get(name, [])) == 0]
+    if empty_splits:
+        print(
+            "[WARN] Legacy file-level splits are degenerate for this task setup: "
+            f"{', '.join(empty_splits)} received 0 files."
+        )
+        print("       Use the sentence-level split workflow for actual BELT comparisons.")
     
     # Step 3: Count word instances per split
     print("\n" + "="*80)
@@ -98,11 +119,11 @@ def main():
     print("\n" + "="*80)
     print("DATA PREPARATION COMPLETE!")
     print("="*80)
-    print(f"\n✓ Vocabulary: {vocab_save_path}")
-    print(f"✓ Splits: {splits_save_path}")
+    print(f"\n[OK] Vocabulary: {vocab_save_path}")
+    print(f"[OK] Legacy file-level splits: {splits_save_path}")
     print("\nYou can now run:")
-    print("  - Model 1 (ablation): python model_custom/experiments/model_without_bootstrapping.py")
-    print("  - Model 2 (full BELT): python model_custom/experiments/model_with_bootstrapping.py")
+    print(f"  - Sentence splits for baseline training: python prepare_sentence_splits.py --config {args.config}")
+    print(f"  - Baseline BELT training: python experiments/model_with_bootstrapping.py --config {args.config}")
 
 
 if __name__ == "__main__":

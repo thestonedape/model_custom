@@ -1,272 +1,114 @@
-# BELT Model - Quick Start Guide
+# Quick Start
 
-Complete implementation of BELT (Boosting with EEG Language Transformer) for word classification.
+This quick start reflects the repository as it exists now, not the earlier BELT-only plan.
 
-## 🚀 Quick Start (3 Steps)
+## 1. Environment
 
-### Step 1: Prepare Data (5 minutes)
+Windows PowerShell:
 
-```bash
-# Activate your virtual environment
-# Windows:
-.venv\Scripts\activate
-
-# Run data preparation
-python model_custom/prepare_data.py
+```powershell
+.\.venv\Scripts\activate
 ```
 
-This will:
-- ✓ Build vocabulary (top-500 words from ZuCo)
-- ✓ Create 80/10/10 train/dev/test splits
-- ✓ Save to `model_custom/data/`
+Install dependencies if needed:
 
-### Step 2: Train Model 1 - Ablation (Hours)
-
-```bash
-# Model 1: Without bootstrapping (L_ce + L_vq only)
-python model_custom/experiments/model_without_bootstrapping.py
+```powershell
+pip install -r requirements.txt
 ```
 
-**Expected Result:** ~25% Top-10 accuracy  
-**Training Time:** ~2-4 hours (depends on GPU)  
-**Saves to:** `results/ablation_results/`
+## 2. Prepare Processed Artifacts
 
-### Step 3: Train Model 2 - Full BELT (Hours)
+If you need the classic processed-feature pipeline artifacts:
 
-```bash
-# Model 2: With bootstrapping (L_ce + α*L_cl + λ*L_vq)
-python model_custom/experiments/model_with_bootstrapping.py
+```powershell
+.\.venv\Scripts\python.exe prepare_data.py
+.\.venv\Scripts\python.exe prepare_sentence_splits.py
 ```
 
-**Expected Result:** ~31.04% Top-10 accuracy  
-**Training Time:** ~3-5 hours (depends on GPU)  
-**Saves to:** `results/main_results/`
+This creates vocabulary and split files in `data/`.
 
----
+## 3. Main Training Paths
 
-## 📊 What You Get
+### A. BELT-style processed baseline
 
-### After Training:
-
-**Model 1 Results** (`results/ablation_results/`):
-- `best_model.pt` - Best checkpoint
-- `final_results.json` - Test metrics
-- `training_history.json` - Per-epoch metrics
-
-**Model 2 Results** (`results/main_results/`):
-- `best_model.pt` - Best checkpoint
-- `final_results.json` - Test metrics
-- `training_history.json` - Per-epoch metrics
-
-### Expected Performance:
-
-| Model | Loss Function | Top-10 Accuracy |
-|-------|--------------|-----------------|
-| Model 1 (Ablation) | L_ce + L_vq | ~25% |
-| Model 2 (Full BELT) | L_ce + α*L_cl + λ*L_vq | **~31.04%** |
-| **Improvement** | | **+5.78%** |
-
----
-
-## 🧪 Test Individual Components
-
-Before full training, you can test each module:
-
-```bash
-# Data components
-python model_custom/data/vocabulary.py
-python model_custom/data/splits.py
-python model_custom/data/dataset.py
-
-# Model components
-python model_custom/models/conformer_block.py
-python model_custom/models/dconformer.py
-python model_custom/models/vector_quantizer.py
-python model_custom/models/classifier.py
-
-# Training components
-python model_custom/training/losses.py
-python model_custom/training/metrics.py
+```powershell
+.\.venv\Scripts\python.exe experiments\model_with_bootstrapping.py --config config\belt_config.yaml
 ```
 
----
+Use this for:
 
-## 📁 Project Structure
+- processed BELT-style baselines
+- VQ / no-VQ comparisons
+- contrastive-loss ablations
 
-```
-model_custom/
-├── prepare_data.py              # [RUN FIRST] Data preparation
-│
-├── experiments/
-│   ├── model_without_bootstrapping.py    # Model 1 (ablation)
-│   └── model_with_bootstrapping.py       # Model 2 (full BELT)
-│
-├── data/
-│   ├── vocabulary.py           # Top-500 word selection
-│   ├── dataset.py              # BELT dataset class
-│   ├── splits.py               # 80/10/10 splitting
-│   └── [Generated files]
-│       ├── vocabulary_top500.pkl
-│       └── splits.pkl
-│
-├── models/
-│   ├── dconformer.py          # 6-layer Conformer encoder
-│   ├── conformer_block.py     # Conformer block
-│   ├── convolution_module.py  # Conv module
-│   ├── vector_quantizer.py    # VQ with codebook
-│   └── classifier.py          # MLP head
-│
-├── training/
-│   ├── losses.py              # L_ce, L_vq, L_cl
-│   ├── metrics.py             # Top-K accuracy
-│   └── trainer.py             # Training loop
-│
-├── config/
-│   └── belt_config.yaml       # All hyperparameters
-│
-└── results/
-    ├── ablation_results/      # Model 1 outputs
-    └── main_results/          # Model 2 outputs
+### B. Raw grouped word-level baseline
+
+```powershell
+.\.venv\Scripts\python.exe experiments\raw_multimodal_baseline.py --config config\raw_multimodal_mixed_word_patched.yaml
 ```
 
----
+Use this for:
 
-## ⚙️ Configuration
+- grouped raw EEG + eye-tracking experiments
+- temporal modeling over word-level grouped raw signals
 
-Edit `model_custom/config/belt_config.yaml` to change:
+Resume example:
 
-**Training:**
-- `epochs: 60` (default)
-- `batch_size: 64`
-- `learning_rate: 5.0e-6`
-- `optimizer: sgd`
-
-**Model:**
-- `num_blocks: 6` (Conformer layers)
-- `codebook_size: 1024`
-- `vocab_size: 500`
-
-**Loss Weights:**
-- `alpha: 0.9` (contrastive weight)
-- `lambda: 1.0` (VQ weight)
-
----
-
-## 🔍 Monitor Training
-
-Training logs show:
-- Batch-level progress every 10 batches
-- Epoch-level metrics (loss, Top-1/5/10 accuracy)
-- Best model tracking
-- Checkpoint saving
-
-Example output:
-```
-EPOCH 1/60
-================================================================================
-Learning rate: 5.00e-06
-  Batch 0/150 | Loss: 6.2145 | Time: 2.3s
-  Batch 10/150 | Loss: 6.1823 | Time: 25.1s
-  ...
-
-Epoch 1 Train Metrics:
-  Top-1 Acc:  0.0234 (2.34%)
-  Top-5 Acc:  0.0891 (8.91%)
-  Top-10 Acc: 0.1456 (14.56%)
-  Total Loss: 6.1234
-
-Evaluating on dev set...
-Dev Metrics:
-  Top-1 Acc:  0.0256 (2.56%)
-  Top-5 Acc:  0.0923 (9.23%)
-  Top-10 Acc: 0.1512 (15.12%)
-
-*** New best model! Top-10 Acc: 0.1512 (15.12%) ***
+```powershell
+.\.venv\Scripts\python.exe experiments\raw_multimodal_baseline.py --config config\raw_multimodal_mixed_word_patched.yaml --resume results\raw_multimodal_mixed_word_patched\checkpoint_epoch_4.pt
 ```
 
----
+### C. Hybrid processed + raw baseline
 
-## 🎯 Troubleshooting
-
-### Out of Memory (OOM)?
-```yaml
-# In belt_config.yaml, reduce:
-batch_size: 32  # or 16
+```powershell
+.\.venv\Scripts\python.exe experiments\hybrid_processed_raw_baseline.py --config config\hybrid_processed_raw_mixed.yaml
 ```
 
-### Training too slow?
-```yaml
-# Reduce number of blocks:
-num_blocks: 4  # instead of 6
+Use this for:
 
-# Or reduce epochs:
-epochs: 30  # for quick testing
+- combined processed summary + grouped raw EEG+ET experiments
+
+## 4. Smoke Tests
+
+If you only want to verify that a pipeline runs end-to-end:
+
+```powershell
+.\.venv\Scripts\python.exe experiments\raw_multimodal_baseline.py --config config\raw_multimodal_word_smoke.yaml
+.\.venv\Scripts\python.exe experiments\hybrid_processed_raw_baseline.py --config config\hybrid_processed_raw_smoke.yaml
 ```
 
-### Data not found?
-```bash
-# Make sure you ran data preparation:
-python model_custom/prepare_data.py
+These are plumbing checks, not meaningful benchmark runs.
 
-# Check that these exist:
-ls model_custom/data/vocabulary_top500.pkl
-ls model_custom/data/splits.pkl
-```
+## 5. Current Anchors
 
----
+The useful reference points right now are:
 
-## 📈 Compare Results
+- processed BELT-style best band: about `29.4` to `29.55%` Top-10
+- grouped raw word-level best band: about `28.24%` Top-10
+- simple hybrid CE-only band: about `28.2%` Top-10
 
-After training both models:
+Interpretation:
 
-```python
-import json
+- raw signal helps
+- grouping fixations helps a lot
+- simple fusion alone is not enough to beat the processed baseline
 
-# Load results
-with open('results/ablation_results/final_results.json') as f:
-    ablation = json.load(f)
+## 6. What To Read First
 
-with open('results/main_results/final_results.json') as f:
-    full_belt = json.load(f)
+If you need the full project context, start here:
 
-# Compare
-print(f"Model 1 (Ablation): {ablation['test_metrics']['top10_acc']:.4f}")
-print(f"Model 2 (Full BELT): {full_belt['test_metrics']['top10_acc']:.4f}")
-print(f"Improvement: +{(full_belt['test_metrics']['top10_acc'] - ablation['test_metrics']['top10_acc'])*100:.2f}%")
-```
+- [README.md](/C:/Users/n1sha/Desktop/model_custom/README.md)
+- [approach_findings_documentation.tex](/C:/Users/n1sha/Desktop/model_custom/approach_findings_documentation.tex)
 
----
+Those two are the current source of truth.
 
-## 🎓 Paper Reference
+## 7. Most Likely Next Architecture
 
-This implementation matches:
-- **BELT Paper**: Section III-D.3 (EEG-to-word Classification)
-- **Table I**: Architecture specifications
-- **Equation 7**: Combined loss L = L_ce + α*L_cl^w + λ*L_vq
-- **Table VI**: Ablation study results
+The strongest next implementation direction is:
 
----
+- BELT-style processed branch with real D-Conformer
+- grouped raw EEG+ET branch
+- stronger fusion
+- contextual semantic alignment
 
-## 📝 Notes
-
-1. **Training method**: JOINT optimization (all losses together from epoch 1)
-2. **Not staged**: No pre-training or fine-tuning phases
-3. **EEG type**: Uses GD (Gaze Duration) features by default
-4. **Vocabulary**: Top-500 most frequent words
-5. **Dataset**: Combines task1-SR, task2-NR, task3-TSR from ZuCo
-
----
-
-## ✅ Checklist
-
-- [ ] Data prepared (`python model_custom/prepare_data.py`)
-- [ ] Virtual environment activated
-- [ ] GPU available (optional but recommended)
-- [ ] Model 1 trained (ablation baseline)
-- [ ] Model 2 trained (full BELT)
-- [ ] Results compared
-
-**Ready to start? Run:**
-```bash
-python model_custom/prepare_data.py
-```
+So if you are resuming work after a break, that is the mainline to keep in mind.

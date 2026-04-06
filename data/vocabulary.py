@@ -22,6 +22,7 @@ class Vocabulary:
         self.word2idx: Dict[str, int] = {}
         self.idx2word: Dict[int, str] = {}
         self.word_counts: Counter = Counter()
+        self.metadata: Dict = {}
         
     def build_from_pickle_files(self, dataset_paths: List[str]) -> None:
         """
@@ -103,7 +104,8 @@ class Vocabulary:
             'vocab_size': self.vocab_size,
             'word2idx': self.word2idx,
             'idx2word': self.idx2word,
-            'word_counts': dict(self.word_counts)
+            'word_counts': dict(self.word_counts),
+            'metadata': self.metadata
         }
         with open(save_path, 'wb') as f:
             pickle.dump(vocab_data, f)
@@ -118,6 +120,7 @@ class Vocabulary:
         self.word2idx = vocab_data['word2idx']
         self.idx2word = vocab_data['idx2word']
         self.word_counts = Counter(vocab_data['word_counts'])
+        self.metadata = vocab_data.get('metadata', {})
         print(f"Vocabulary loaded from: {load_path}")
         print(f"  Vocabulary size: {self.vocab_size}")
     
@@ -168,6 +171,10 @@ def build_zuco_vocabulary(
     # Build vocabulary
     vocab = Vocabulary(vocab_size=vocab_size)
     vocab.build_from_pickle_files(pickle_paths)
+    vocab.metadata = {
+        'dataset_root': str(dataset_root),
+        'tasks': list(tasks)
+    }
     
     # Save if requested
     if save_path:

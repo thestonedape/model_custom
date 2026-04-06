@@ -1,10 +1,11 @@
 """
-Prepare Sentence-Level Splits (80/10/10) for BELT
-This properly matches the BELT paper's data splitting approach
+Prepare sentence-level splits for BELT-style experiments.
 """
 
+import argparse
 import sys
 from pathlib import Path
+import yaml
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -13,18 +14,32 @@ from data.sentence_splits import create_sentence_splits, analyze_sentence_splits
 from data.vocabulary import Vocabulary
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Prepare sentence-level splits for BELT baseline training")
+    parser.add_argument("--config", type=str, default="config/belt_config.yaml")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    with open(args.config, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
     print("="*80)
     print("BELT DATA PREPARATION - SENTENCE-LEVEL SPLITS")
     print("="*80)
     print()
-    print("This creates proper 80/10/10 splits at SENTENCE level")
-    print("(not file level), matching the BELT paper exactly.")
+    print("This creates configurable 80/10/10 splits at SENTENCE level")
+    print("(not file level) for the task set and split mode in your config.")
     print()
     
     # Configuration
-    dataset_root = "dataset/ZuCo"
-    tasks = ['task1-SR', 'task2-NR', 'task2-NR-2.0', 'task3-TSR', 'task3-TSR-2.0']
+    dataset_root = config['data']['dataset_path']
+    tasks = list(config['data']['tasks'])
+    random_seed = int(config['data'].get('random_seed', 42))
+    split_mode = config['data'].get('split_mode', 'sentence_instance')
+    splits_path = config['data'].get('splits_path', "data/sentence_splits.pkl")
+    vocab_path = config['data'].get('vocab_path', "data/vocabulary_top500.pkl")
     
     # Step 1: Create sentence-level splits
     print("="*80)
@@ -33,6 +48,8 @@ def main():
     print(f"Dataset root: {dataset_root}")
     print(f"Tasks: {tasks}")
     print(f"Split ratios: 80% train / 10% dev / 10% test")
+    print(f"Split mode: {split_mode}")
+    print(f"Save path: {splits_path}")
     print()
     
     splits = create_sentence_splits(
@@ -41,8 +58,9 @@ def main():
         train_ratio=0.8,
         dev_ratio=0.1,
         test_ratio=0.1,
-        random_seed=42,
-        save_path="data/sentence_splits.pkl"
+        random_seed=random_seed,
+        split_mode=split_mode,
+        save_path=splits_path
     )
     
     # Step 2: Analyze the splits
@@ -50,7 +68,7 @@ def main():
     print("STEP 2: ANALYZING SPLITS")
     print("="*80)
     
-    analyze_sentence_splits("data/sentence_splits.pkl")
+    analyze_sentence_splits(splits_path)
     
     # Step 3: Verify with vocabulary
     print("\n" + "="*80)
@@ -59,10 +77,10 @@ def main():
     
     try:
         vocab = Vocabulary(vocab_size=500)
-        vocab.load("data/vocabulary_top500.pkl")
-        print(f"✓ Vocabulary loaded: {len(vocab.word2idx)} words")
+        vocab.load(vocab_path)
+        print(f"[OK] Vocabulary loaded: {len(vocab.word2idx)} words")
     except FileNotFoundError:
-        print("⚠ Vocabulary not found. Run prepare_data.py first to create it.")
+        print(f"[WARN] Vocabulary not found at {vocab_path}. Run prepare_data.py first to create it.")
         print("  (The splits are ready, but you need vocabulary for training)")
     
     # Step 4: Summary
@@ -70,19 +88,18 @@ def main():
     print("DATA PREPARATION COMPLETE!")
     print("="*80)
     print()
-    print("✓ Sentence-level splits created: data/sentence_splits.pkl")
+    print(f"[OK] Sentence-level splits created: {splits_path}")
     print()
     print("Split Summary:")
     print(f"  Train: {len(splits['train']):,} sentences ({splits['metadata']['train_ratio']:.1%})")
     print(f"  Dev:   {len(splits['dev']):,} sentences ({splits['metadata']['dev_ratio']:.1%})")
     print(f"  Test:  {len(splits['test']):,} sentences ({splits['metadata']['test_ratio']:.1%})")
     print()
-    print("This matches BELT paper's 80/10/10 split! ✓✓✓")
+    print("Configured split generation complete.")
     print()
     print("Next steps:")
-    print("  1. Ensure vocabulary exists: python prepare_data.py")
-    print("  2. Update training script to use sentence_dataset.py")
-    print("  3. Run training: python experiments/model_with_bootstrapping.py")
+    print(f"  1. Ensure vocabulary exists: python prepare_data.py --config {args.config}")
+    print(f"  2. Run baseline training: python experiments/model_with_bootstrapping.py --config {args.config}")
     print()
 
 

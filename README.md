@@ -1,299 +1,217 @@
-# BELT Model Implementation for EEG-to-Word Classification
+# EEG-to-Word Decoding Experiments on ZuCo
 
-**Standalone implementation** of BELT (Bootstrapped EEG-to-text Language Translation) with proven enhancements.
+This repository started as a BELT-style EEG-to-word classification implementation and has since grown into a broader research sandbox for:
 
-This is a self-contained project that includes:
-- ✅ Complete BELT implementation (Models 1, 2, 3)
-- ✅ ZuCo EEG dataset (included in `dataset/`)
-- ✅ 7 proven enhancement techniques
-- ✅ Ready-to-run training scripts
+- BELT-style processed-feature baselines
+- raw fixation-level EEG + eye-tracking modeling
+- grouped word-level raw modeling
+- hybrid processed + raw architectures
 
-## Quick Start (3 Steps)
+The project currently targets **500-way word classification** on ZuCo with **Top-1 / Top-5 / Top-10** evaluation, with **Top-10 accuracy** as the main comparison metric.
 
-1. **Install dependencies**: `pip install -r requirements.txt`
-2. **Prepare data**: `python prepare_data.py`
-3. **Train models**: `train_all.bat` (Windows) or `bash train_all.sh` (Linux/Mac)
+## Current Status
 
-See [QUICKSTART.md](QUICKSTART.md) for detailed instructions.
+What we know so far:
 
-## Project Structure
+- Strong processed BELT-style runs sit in roughly the **29.4 to 29.55\% Top-10** band.
+- Simple training-trick upgrades did **not** break that ceiling in a meaningful way.
+- Raw fixation-only modeling was too noisy and plateaued much lower.
+- Grouping raw fixations by word was a major improvement and pushed raw modeling to about **28.24\% Top-10**.
+- A simple processed+raw hybrid with CE-only training also plateaued near the **28.2\%** band.
 
-```
+The current working hypothesis is:
+
+- the remaining bottleneck is no longer basic preprocessing alone
+- it is mostly in **representation quality, fusion design, and language-aware supervision**
+
+The strongest next direction is likely:
+
+- **BELT core processed encoder + grouped raw EEG+ET branch + stronger contextual semantic alignment**
+
+## Main Pipelines in This Repo
+
+### 1. BELT-style processed-feature pipeline
+
+This is the closest path to the original repo goal:
+
+- processed EEG summary features (`840 = 105 electrodes x 8 bands`)
+- D-Conformer encoder
+- optional vector quantizer
+- optional BART-based contrastive branch
+- MLP classifier
+
+Main files:
+
+- [config/belt_config.yaml](/C:/Users/n1sha/Desktop/model_custom/config/belt_config.yaml)
+- [experiments/model_with_bootstrapping.py](/C:/Users/n1sha/Desktop/model_custom/experiments/model_with_bootstrapping.py)
+- [models/dconformer.py](/C:/Users/n1sha/Desktop/model_custom/models/dconformer.py)
+- [models/vector_quantizer.py](/C:/Users/n1sha/Desktop/model_custom/models/vector_quantizer.py)
+- [training/losses.py](/C:/Users/n1sha/Desktop/model_custom/training/losses.py)
+
+### 2. Raw multimodal pipeline
+
+This path uses:
+
+- raw fixation-level EEG
+- raw fixation-level eye-tracking
+- fixation metrics
+- temporal patching/downsampling
+- transformer-based temporal modeling
+
+Main files:
+
+- [data/raw_fixation_dataset.py](/C:/Users/n1sha/Desktop/model_custom/data/raw_fixation_dataset.py)
+- [data/raw_fixation_torch_dataset.py](/C:/Users/n1sha/Desktop/model_custom/data/raw_fixation_torch_dataset.py)
+- [scripts/build_word_level_cache.py](/C:/Users/n1sha/Desktop/model_custom/scripts/build_word_level_cache.py)
+- [models/raw_multimodal.py](/C:/Users/n1sha/Desktop/model_custom/models/raw_multimodal.py)
+- [experiments/raw_multimodal_baseline.py](/C:/Users/n1sha/Desktop/model_custom/experiments/raw_multimodal_baseline.py)
+
+### 3. Hybrid processed + raw pipeline
+
+This path joins:
+
+- processed BELT-style summary EEG features
+- grouped raw word-level EEG
+- grouped raw eye-tracking
+- fixation metrics
+
+and fuses them with a gated hybrid model.
+
+Main files:
+
+- [scripts/build_hybrid_word_cache.py](/C:/Users/n1sha/Desktop/model_custom/scripts/build_hybrid_word_cache.py)
+- [data/hybrid_word_torch_dataset.py](/C:/Users/n1sha/Desktop/model_custom/data/hybrid_word_torch_dataset.py)
+- [models/hybrid_processed_raw.py](/C:/Users/n1sha/Desktop/model_custom/models/hybrid_processed_raw.py)
+- [experiments/hybrid_processed_raw_baseline.py](/C:/Users/n1sha/Desktop/model_custom/experiments/hybrid_processed_raw_baseline.py)
+- [config/hybrid_processed_raw_mixed.yaml](/C:/Users/n1sha/Desktop/model_custom/config/hybrid_processed_raw_mixed.yaml)
+
+## Repository Layout
+
+```text
 model_custom/
-├── config/
-│   └── belt_config.yaml          # All hyperparameters from BELT paper
-│
-├── data/
-│   ├── vocabulary.py             # Top-500 word selection
-│   ├── dataset.py                # BELTWordDataset class
-│   ├── splits.py                 # 80/10/10 data splitting
-│   └── __init__.py
-│
-├── models/
-│   ├── conformer_block.py        # Conformer block implementation
-│   ├── convolution_module.py     # Depthwise separable convolution
-│   ├── dconformer.py             # D-Conformer encoder (6 blocks)
-│   ├── vector_quantizer.py       # VQ with codebook (Equations 1, 2)
-│   └── classifier.py             # MLP classifier head
-│
-├── training/
-│   ├── losses.py                 # L_ce, L_vq, L_cl implementations
-│   ├── trainer.py                # Training loop (TODO)
-│   └── metrics.py                # Top-K accuracy (TODO)
-│
-├── experiments/
-│   ├── model_without_bootstrapping.py   # Ablation: L_ce + L_vq only
-│   └── model_with_bootstrapping.py      # Full BELT: L_ce + α*L_cl + λ*L_vq
-│
-└── results/
-    ├── ablation_results/         # Results from Model 1
-    └── main_results/             # Results from Model 2 (full BELT)
+├── config/                  # experiment configs
+├── data/                    # dataset code, splits, vocab, torch datasets
+├── dataset/                 # local ZuCo data and related resources
+├── experiments/             # train/eval entry points
+├── models/                  # model definitions
+├── scripts/                 # cache builders and utilities
+├── training/                # loss utilities and training support
+├── results/                 # active experiment outputs
+└── approach_findings_documentation.tex
 ```
 
-## Quick Start
+## Useful Commands
 
-### 1. Prepare Data
+### Prepare classic processed artifacts
 
-```python
-from data import build_zuco_vocabulary, create_splits
-
-# Build vocabulary (top-500 words)
-vocab = build_zuco_vocabulary(
-    dataset_root="dataset/ZuCo",
-    tasks=["task1-SR", "task2-NR", "task3-TSR"],
-    vocab_size=500,
-    save_path="model_custom/data/vocabulary_top500.pkl"
-)
-
-# Create splits (80/10/10)
-splits = create_splits(
-    dataset_root="dataset/ZuCo",
-    tasks=["task1-SR", "task2-NR", "task3-TSR"],
-    train_ratio=0.8,
-    dev_ratio=0.1,
-    test_ratio=0.1,
-    random_seed=42,
-    save_path="model_custom/data/splits.pkl"
-)
+```powershell
+.\.venv\Scripts\python.exe prepare_data.py
+.\.venv\Scripts\python.exe prepare_sentence_splits.py
 ```
 
-### 2. Architecture Overview
+### Train BELT-style processed model
 
-**Input:** EEG features (840 dimensions = 105 electrodes × 8 frequency bands)
-
-**Processing Pipeline:**
-```
-EEG (840) 
-  → D-Conformer (6 blocks) 
-  → h (840)
-  → Vector Quantizer 
-  → b (1024)
-  → MLP Classifier 
-  → logits (500)
+```powershell
+.\.venv\Scripts\python.exe experiments\model_with_bootstrapping.py --config config\belt_config.yaml
 ```
 
-**For Model 2 (with bootstrapping):**
-```
-b (1024) → EEG projection (768)
-                ↓
-         Contrastive Loss ← BART word embeddings (768)
-```
+### Train raw grouped word-level model
 
-### 3. Model Components
-
-#### D-Conformer Encoder
-```python
-from models import DConformer
-
-encoder = DConformer(
-    d_model=840,
-    num_blocks=6,
-    num_heads=8,
-    ffn_expansion=4,
-    conv_kernel_size=31,
-    dropout=0.1
-)
-
-h = encoder(eeg)  # (batch, 840) → (batch, 840)
+```powershell
+.\.venv\Scripts\python.exe experiments\raw_multimodal_baseline.py --config config\raw_multimodal_mixed_word_patched.yaml
 ```
 
-#### Vector Quantizer
-```python
-from models import VectorQuantizer
+### Resume raw grouped run
 
-vq = VectorQuantizer(
-    input_dim=840,
-    codebook_size=1024,
-    codebook_dim=1024,
-    beta=0.3
-)
-
-b, vq_loss = vq(h)  # (batch, 840) → (batch, 1024), scalar
+```powershell
+.\.venv\Scripts\python.exe experiments\raw_multimodal_baseline.py --config config\raw_multimodal_mixed_word_patched.yaml --resume results\raw_multimodal_mixed_word_patched\checkpoint_epoch_4.pt
 ```
 
-#### Classifier
-```python
-from models import MLPClassifier
+### Train hybrid processed+raw model
 
-classifier = MLPClassifier(
-    input_dim=1024,
-    hidden_dims=[512, 256],
-    output_dim=500,
-    dropout=0.3
-)
-
-logits = classifier(b)  # (batch, 1024) → (batch, 500)
+```powershell
+.\.venv\Scripts\python.exe experiments\hybrid_processed_raw_baseline.py --config config\hybrid_processed_raw_mixed.yaml
 ```
 
-### 4. Loss Functions
+## Active Data Artifacts
 
-**Model 1 (Ablation - No Bootstrapping):**
-```python
-L = L_ce + λ*L_vq
-where λ = 1.0
-```
+The current hybrid pipeline relies on hybrid joined caches in `data/cache/`:
 
-**Model 2 (Full BELT - With Bootstrapping):**
-```python
-L = L_ce + α*L_cl^w + λ*L_vq
-where α = 0.9, λ = 1.0
-```
+- `hybrid_word_task2_NR.pkl`
+- `hybrid_word_task2_NR_2_0_part1.pkl`
+- `hybrid_word_task2_NR_2_0_part2.pkl`
+- `hybrid_word_task2_NR_2_0_part3.pkl`
+- `hybrid_word_task3_TSR.pkl`
+- `hybrid_word_task3_TSR_2_0_part1.pkl`
+- `hybrid_word_task3_TSR_2_0_part2a.pkl`
+- `hybrid_word_task3_TSR_2_0_part2b.pkl`
+- `hybrid_word_task3_TSR_2_0_part3a.pkl`
+- `hybrid_word_task3_TSR_2_0_part3b.pkl`
 
-```python
-from training import ContrastiveLoss, BELTLosses
+These are built from the raw grouped caches plus the processed EEG summaries by joining on:
 
-# Setup contrastive loss (Model 2 only)
-contrastive = ContrastiveLoss(
-    eeg_dim=1024,
-    word_dim=768,
-    bart_model_name="facebook/bart-base",
-    temperature=0.07,
-    freeze_bart=True
-)
+- task
+- subject id
+- sentence index
+- word index
 
-# Setup combined losses
-belt_losses = BELTLosses(
-    alpha=0.9,
-    lambda_vq=1.0,
-    use_contrastive=True,  # False for Model 1
-    contrastive_loss=contrastive
-)
+## Important Findings
 
-# Compute loss
-total_loss, loss_dict = belt_losses.compute_total_loss(
-    logits=logits,
-    labels=labels,
-    vq_loss=vq_loss,
-    eeg_features=b,  # For contrastive
-    words=word_list   # For contrastive
-)
-```
+### What helped
 
-## Training Configuration
+- moving from isolated raw fixations to grouped word-level raw samples
+- normalizing raw EEG and eye-tracking sequences
+- preserving temporal structure instead of using only summary features
 
-From `config/belt_config.yaml`:
+### What did not help enough
 
-```yaml
-training:
-  epochs: 60
-  batch_size: 64
-  learning_rate: 5.0e-6
-  optimizer: "sgd"
-  momentum: 0.9
-  weight_decay: 1.0e-4
-  scheduler: "cosine"
-  
-  loss_weights:
-    alpha: 0.9      # Contrastive loss weight
-    lambda: 1.0     # VQ loss weight
-```
+- weighted sampling
+- class-balanced CE
+- simple stronger regularization stacks
+- CE-only raw fusion
+- CE-only hybrid fusion
 
-## Expected Results
+### What is still missing
 
-**Model 1 (Ablation):**
-- Loss: L_ce + L_vq
-- Expected Top-10 Accuracy: ~25-27%
-- Purpose: Measure D-Conformer + VQ alone
+- stronger processed branch inside the hybrid model
+- contextual semantic alignment instead of isolated-word matching
+- better use of sentence context
+- better multimodal fusion than simple gating
 
-**Model 2 (Full BELT):**
-- Loss: L_ce + 0.9*L_cl + 1.0*L_vq
-- Expected Top-10 Accuracy: ~31.04%
-- Purpose: Match BELT paper performance
-- Improvement: +5.78% over ablation
+## Documentation
 
-## Testing Individual Components
+The main project write-up is:
 
-Each module has a test main:
+- [approach_findings_documentation.tex](/C:/Users/n1sha/Desktop/model_custom/approach_findings_documentation.tex)
 
-```bash
-# Test vocabulary building
-python model_custom/data/vocabulary.py
+It includes:
 
-# Test dataset loading
-python model_custom/data/dataset.py
+- the project history
+- why each change was made
+- current architecture diagrams
+- what failed and why
+- the real bottlenecks
+- the most promising research directions and search keywords
 
-# Test splits creation
-python model_custom/data/splits.py
+## Research Direction Going Forward
 
-# Test Conformer block
-python model_custom/models/conformer_block.py
+The current most defensible next-step architecture is:
 
-# Test Convolution module
-python model_custom/models/convolution_module.py
+- BELT-style processed branch with the real D-Conformer
+- grouped raw EEG+ET word-level branch
+- stronger fusion
+- contextual semantic alignment on top of the fused representation
 
-# Test D-Conformer
-python model_custom/models/dconformer.py
+In short:
 
-# Test Vector Quantizer
-python model_custom/models/vector_quantizer.py
+- not raw-only
+- not CE-only hybrid
+- not more small training tricks
 
-# Test Classifier
-python model_custom/models/classifier.py
+The project is now at the point where **architecture and supervision quality matter more than another round of minor tuning**.
 
-# Test Loss functions
-python model_custom/training/losses.py
-```
+## Notes
 
-## Next Steps
-
-1. **Complete trainer.py**: Training loop implementation
-2. **Complete metrics.py**: Top-K accuracy evaluation
-3. **Create model_without_bootstrapping.py**: Model 1 (ablation)
-4. **Create model_with_bootstrapping.py**: Model 2 (full BELT)
-5. **Run experiments**: Train both models for 60 epochs
-6. **Analyze results**: Compare ablation vs full BELT
-
-## References
-
-- BELT Paper: "Boosting with EEG Language Transformer for Natural Reading EEG-to-Text Translation"
-- Conformer Paper: "Conformer: Convolution-augmented Transformer for Speech Recognition"
-- VQ-VAE: "Neural Discrete Representation Learning"
-- InfoNCE: "Representation Learning with Contrastive Predictive Coding"
-
-## Architecture Specifications (Table I from BELT Paper)
-
-| Component | Specification |
-|-----------|--------------|
-| Input | 840 (105 electrodes × 8 bands) |
-| D-Conformer | 6 blocks |
-| d_model | 840 |
-| num_heads | 8 |
-| FFN | 840 → 3360 → 840 |
-| Conv kernel | 31 |
-| VQ codebook size | 1024 |
-| VQ codebook dim | 1024 |
-| Classifier | 1024 → 512 → 256 → 500 |
-| Dropout | 0.1 (encoder), 0.3 (classifier) |
-
-## Training Method
-
-**JOINT OPTIMIZATION (not staged):**
-- All losses computed together from epoch 1
-- Single optimizer for entire model
-- 60 epochs total
-- Batch size 64
-- Learning rate 5e-6
-- SGD with momentum 0.9
-- Cosine annealing scheduler
-
-This is the exact method described in BELT paper Section III-D.3 and Equation 7.
+- This repository is actively experimental.
+- Some older docs such as [QUICKSTART.md](/C:/Users/n1sha/Desktop/model_custom/QUICKSTART.md) and [EXPERIMENTS.md](/C:/Users/n1sha/Desktop/model_custom/EXPERIMENTS.md) still reflect older BELT-only ambitions and are no longer the best summary of the current state.
+- The README and the LaTeX documentation should be treated as the main source of truth going forward.

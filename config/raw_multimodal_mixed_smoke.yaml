@@ -1,0 +1,54 @@
+# Mixed raw fixation-level smoke test on the full shard set.
+
+data:
+  cache_paths:
+    - "data/cache/raw_fixation_task2_NR.pkl"
+    - "data/cache/raw_fixation_task2_NR_2_0_part1.pkl"
+    - "data/cache/raw_fixation_task2_NR_2_0_part2.pkl"
+    - "data/cache/raw_fixation_task2_NR_2_0_part3.pkl"
+    - "data/cache/raw_fixation_task3_TSR.pkl"
+    - "data/cache/raw_fixation_task3_TSR_2_0_part1.pkl"
+    - "data/cache/raw_fixation_task3_TSR_2_0_part2a.pkl"
+    - "data/cache/raw_fixation_task3_TSR_2_0_part2b.pkl"
+    - "data/cache/raw_fixation_task3_TSR_2_0_part3a.pkl"
+    - "data/cache/raw_fixation_task3_TSR_2_0_part3b.pkl"
+  vocab_path: "data/vocabulary_top500_nr_tsr_mixed.pkl"
+  splits_path: "data/sentence_splits_nr_tsr_mixed.pkl"
+  tasks: ["task2-NR", "task2-NR-2.0", "task3-TSR", "task3-TSR-2.0"]
+
+model:
+  eeg_dim: 105
+  et_dim: 4
+  metrics_dim: 5
+  model_dim: 128
+  et_hidden_dim: 32
+  aux_hidden_dim: 32
+  num_heads: 4
+  num_layers: 2
+  ff_dim: 256
+  dropout: 0.1
+  num_classes: 500
+  norm_first: false
+
+training:
+  epochs: 1
+  batch_size: 32
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-2
+  grad_clip: 1.0
+  max_train_batches: 10
+
+evaluation:
+  batch_size: 64
+  max_eval_batches: 2
+  metrics: ["top1", "top5", "top10"]
+
+logging:
+  log_interval: 1
+
+experiments:
+  save_dir: "results/raw_multimodal_mixed_smoke"
+
+hardware:
+  device: "cuda"
+  num_workers: 0

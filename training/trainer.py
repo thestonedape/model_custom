@@ -89,6 +89,9 @@ class BELTTrainer:
         # Training state
         self.current_epoch = 0
         self.best_dev_acc = 0.0
+        self.best_epoch = 0
+        self.target_alpha = self.belt_losses.alpha
+        self.use_vector_quantizer = bool(config.get('use_vector_quantizer', True))
         self.training_history = {
             'train': [],
             'dev': []
@@ -134,6 +137,62 @@ class BELTTrainer:
         
         print(f"Scheduler: CosineAnnealingLR")
         print(f"  T_max: {config.get('epochs', 60)}")
+
+    def _get_contrastive_checkpoint_state(self):
+        """Persist trainable contrastive layers alongside the main model."""
+        contrastive = getattr(self.belt_losses, 'contrastive_loss', None)
+        if contrastive is None:
+            return None
+        
+        state = {
+            'eeg_projection_state_dict': contrastive.eeg_projection.state_dict(),
+            'word_projection_state_dict': contrastive.word_projection.state_dict()
+        }
+        if hasattr(contrastive, 'bart') and any(param.requires_grad for param in contrastive.bart.parameters()):
+            state['bart_state_dict'] = contrastive.bart.state_dict()
+        
+        return state
+
+    def _load_contrastive_checkpoint_state(self, checkpoint: Dict):
+        """Restore contrastive projection weights when the run uses bootstrapping."""
+        state = checkpoint.get('contrastive_state_dict')
+        if state is None:
+            return
+        
+        contrastive = getattr(self.belt_losses, 'contrastive_loss', None)
+        if contrastive is None:
+            raise ValueError("Checkpoint contains contrastive state but trainer was created without contrastive loss")
+        
+        contrastive.eeg_projection.load_state_dict(state['eeg_projection_state_dict'])
+        contrastive.word_projection.load_state_dict(state['word_projection_state_dict'])
+        if 'bart_state_dict' in state and hasattr(contrastive, 'bart'):
+            contrastive.bart.load_state_dict(state['bart_state_dict'])
+
+    def update_loss_schedule(self, epoch: int):
+        """Update the contrastive weight schedule for the current epoch."""
+        if not self.belt_losses.use_contrastive or self.belt_losses.contrastive_loss is None:
+            self.belt_losses.alpha = 0.0
+            return
+
+        schedule = self.config.get('contrastive_schedule', {})
+        if not schedule or not schedule.get('enabled', False):
+            self.belt_losses.alpha = self.target_alpha
+            return
+
+        start_alpha = float(schedule.get('start_alpha', 0.0))
+        target_alpha = float(schedule.get('target_alpha', self.target_alpha))
+        warmup_epochs = int(schedule.get('warmup_epochs', 0))
+        ramp_epochs = int(schedule.get('ramp_epochs', 0))
+
+        if epoch <= warmup_epochs:
+            current_alpha = start_alpha
+        elif ramp_epochs <= 0:
+            current_alpha = target_alpha
+        else:
+            progress = min(max(epoch - warmup_epochs, 0), ramp_epochs) / ramp_epochs
+            current_alpha = start_alpha + progress * (target_alpha - start_alpha)
+
+        self.belt_losses.alpha = current_alpha
     
     def train_epoch(self, epoch: int):
         """Train for one epoch"""
@@ -242,16 +301,25 @@ class BELTTrainer:
     
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         """Save model checkpoint"""
+        loss_config = self.belt_losses.get_loss_config() if hasattr(self.belt_losses, 'get_loss_config') else {
+            'alpha': self.belt_losses.alpha,
+            'lambda_vq': self.belt_losses.lambda_vq
+        }
         checkpoint = {
             'epoch': epoch,
             'encoder_state_dict': self.encoder.state_dict(),
             'vector_quantizer_state_dict': self.vector_quantizer.state_dict(),
             'classifier_state_dict': self.classifier.state_dict(),
+            'contrastive_state_dict': self._get_contrastive_checkpoint_state(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_dev_acc': self.best_dev_acc,
+            'best_epoch': self.best_epoch,
+            'use_contrastive': self.belt_losses.use_contrastive,
+            'use_vector_quantizer': self.use_vector_quantizer,
             'config': self.config,
-            'training_history': self.training_history
+            'training_history': self.training_history,
+            'loss_config': loss_config
         }
         
         # Save regular checkpoint
@@ -272,11 +340,13 @@ class BELTTrainer:
         self.encoder.load_state_dict(checkpoint['encoder_state_dict'])
         self.vector_quantizer.load_state_dict(checkpoint['vector_quantizer_state_dict'])
         self.classifier.load_state_dict(checkpoint['classifier_state_dict'])
+        self._load_contrastive_checkpoint_state(checkpoint)
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
         self.current_epoch = checkpoint['epoch']
         self.best_dev_acc = checkpoint['best_dev_acc']
+        self.best_epoch = checkpoint.get('best_epoch', checkpoint['epoch'])
         self.training_history = checkpoint.get('training_history', {'train': [], 'dev': []})
         
         print(f"Loaded checkpoint from epoch {self.current_epoch}")
@@ -296,6 +366,7 @@ class BELTTrainer:
         print(f"Train batches: {len(self.train_loader)}")
         print(f"Dev batches: {len(self.dev_loader)}")
         print(f"Save directory: {self.save_dir}")
+        print(f"Vector quantizer active: {self.use_vector_quantizer}")
         
         # Print model parameters
         total_params = (
@@ -303,13 +374,18 @@ class BELTTrainer:
             sum(p.numel() for p in self.vector_quantizer.parameters()) +
             sum(p.numel() for p in self.classifier.parameters())
         )
+        if self.belt_losses.use_contrastive and self.belt_losses.contrastive_loss is not None:
+            total_params += sum(p.numel() for p in self.belt_losses.contrastive_loss.eeg_projection.parameters())
+            total_params += sum(p.numel() for p in self.belt_losses.contrastive_loss.word_projection.parameters())
         print(f"Total parameters: {total_params:,}")
         
         for epoch in range(self.current_epoch, num_epochs):
             print(f"\n{'='*80}")
             print(f"EPOCH {epoch+1}/{num_epochs}")
             print(f"{'='*80}")
+            self.update_loss_schedule(epoch + 1)
             print(f"Learning rate: {self.optimizer.param_groups[0]['lr']:.2e}")
+            print(f"Contrastive alpha: {self.belt_losses.alpha:.4f}")
             
             # Train
             train_metrics = self.train_epoch(epoch + 1)
@@ -325,7 +401,24 @@ class BELTTrainer:
             is_best = dev_acc > self.best_dev_acc
             if is_best:
                 self.best_dev_acc = dev_acc
+                self.best_epoch = epoch + 1
                 print(f"\n*** New best model! Top-10 Acc: {dev_acc:.4f} ({dev_acc*100:.2f}%) ***")
+
+            train_top1 = train_metrics.get('top1_acc', 0.0)
+            train_top5 = train_metrics.get('top5_acc', 0.0)
+            train_top10 = train_metrics.get('top10_acc', 0.0)
+            dev_top1 = dev_metrics.get('top1_acc', 0.0)
+            dev_top5 = dev_metrics.get('top5_acc', 0.0)
+            dev_top10 = dev_metrics.get('top10_acc', 0.0)
+            print(
+                "\nEPOCH ACCURACY SUMMARY | "
+                f"Train Top-1: {train_top1*100:.2f}% | "
+                f"Train Top-5: {train_top5*100:.2f}% | "
+                f"Train Top-10: {train_top10*100:.2f}% | "
+                f"Dev Top-1: {dev_top1*100:.2f}% | "
+                f"Dev Top-5: {dev_top5*100:.2f}% | "
+                f"Dev Top-10: {dev_top10*100:.2f}%"
+            )
             
             # Save checkpoint
             if self.config.get('save_best', True) and is_best:
@@ -344,17 +437,40 @@ class BELTTrainer:
             
             self.current_epoch = epoch + 1
         
-        # Final evaluation on test set
+        # Final evaluation on test set uses the best validation checkpoint,
+        # not the last in-memory epoch.
+        final_epoch = self.current_epoch
+        evaluated_epoch = final_epoch
+        evaluation_checkpoint = None
+        best_path = self.save_dir / "best_model.pt"
+        if best_path.exists():
+            print(f"\nLoading best checkpoint for final test evaluation: {best_path}")
+            self.load_checkpoint(best_path)
+            evaluated_epoch = self.current_epoch
+            evaluation_checkpoint = str(best_path)
+        else:
+            print("\nBest checkpoint not found; evaluating the last in-memory epoch.")
+            evaluation_checkpoint = "in_memory_last_epoch"
+        
         print("\n" + "="*80)
         print("FINAL EVALUATION ON TEST SET")
         print("="*80)
         test_metrics = self.evaluate(self.test_loader, split_name="Test")
-        
+
         # Save final results
+        loss_config = self.belt_losses.get_loss_config() if hasattr(self.belt_losses, 'get_loss_config') else {
+            'alpha': self.belt_losses.alpha,
+            'lambda_vq': self.belt_losses.lambda_vq,
+            'use_contrastive': self.belt_losses.use_contrastive
+        }
         results = {
             'best_dev_acc': self.best_dev_acc,
+            'best_epoch': self.best_epoch,
             'test_metrics': test_metrics,
-            'final_epoch': self.current_epoch
+            'final_epoch': final_epoch,
+            'evaluated_epoch': evaluated_epoch,
+            'evaluation_checkpoint': evaluation_checkpoint,
+            'loss_config': loss_config
         }
         
         results_path = self.save_dir / "final_results.json"
@@ -363,5 +479,8 @@ class BELTTrainer:
         
         print(f"\nTraining complete!")
         print(f"Best dev Top-10 accuracy: {self.best_dev_acc:.4f} ({self.best_dev_acc*100:.2f}%)")
+        print(f"Best epoch: {self.best_epoch}")
+        print(f"Test Top-1 accuracy: {test_metrics.get('top1_acc', 0.0):.4f} ({test_metrics.get('top1_acc', 0.0)*100:.2f}%)")
+        print(f"Test Top-5 accuracy: {test_metrics.get('top5_acc', 0.0):.4f} ({test_metrics.get('top5_acc', 0.0)*100:.2f}%)")
         print(f"Test Top-10 accuracy: {test_metrics.get('top10_acc', 0.0):.4f} ({test_metrics.get('top10_acc', 0.0)*100:.2f}%)")
         print(f"Results saved to: {results_path}")

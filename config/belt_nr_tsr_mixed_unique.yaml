@@ -1,0 +1,89 @@
+# BELT-style baseline on mixed ZuCo 1.0 + 2.0 NR/TSR tasks, with unique sentence-text splits.
+
+data:
+  dataset_path: "dataset/ZuCo"
+  tasks: ["task2-NR", "task2-NR-2.0", "task3-TSR", "task3-TSR-2.0"]
+  vocabulary_size: 500
+  vocab_path: "data/vocabulary_top500_nr_tsr_mixed.pkl"
+  splits_path: "data/sentence_splits_nr_tsr_mixed_unique.pkl"
+  legacy_splits_path: "data/legacy_splits_nr_tsr_mixed.pkl"
+  split_mode: "unique_sentence_text"
+  splits:
+    train: 0.8
+    dev: 0.1
+    test: 0.1
+  input_dim: 840
+  random_seed: 42
+
+model:
+  conformer:
+    num_blocks: 6
+    d_model: 840
+    num_heads: 8
+    ffn_expansion: 4
+    dropout: 0.1
+    conv_kernel_size: 31
+
+  vector_quantizer:
+    enabled: true
+    input_dim: 840
+    codebook_size: 1024
+    codebook_dim: 1024
+    beta: 0.3
+
+  contrastive:
+    eeg_proj_dim: 1024
+    word_proj_dim: 768
+    bart_model: "facebook/bart-base"
+    freeze_bart: true
+    temperature: 0.07
+
+  classifier:
+    input_dim: 1024
+    hidden_dims: [512, 256]
+    output_dim: 500
+    dropout: 0.3
+
+training:
+  epochs: 60
+  batch_size: 64
+  learning_rate: 1.0e-4
+  optimizer: "sgd"
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  scheduler: "cosine"
+
+  loss_weights:
+    alpha: 0.9
+    lambda: 1.0
+
+  joint_training: true
+  grad_clip: 1.0
+  save_best: true
+  save_every: 5
+  early_stopping_patience: 15
+
+evaluation:
+  metrics: ["top1", "top5", "top10"]
+  batch_size: 128
+
+logging:
+  log_interval: 10
+  tensorboard: true
+  wandb: false
+
+experiments:
+  ablation:
+    use_contrastive: false
+    save_dir: "results/nr_tsr_mixed_unique_ablation_results"
+    expected_top10: 0.295
+
+  full_belt:
+    use_contrastive: true
+    save_dir: "results/nr_tsr_mixed_unique_full_belt_results"
+    expected_top10: 0.3104
+
+hardware:
+  device: "cuda"
+  num_workers: 4
+  pin_memory: true
